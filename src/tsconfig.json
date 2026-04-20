@@ -33,6 +33,7 @@
 		"./vscode-dts/vscode.d.ts"
 	],
 	"exclude": [
+		"./vscode-dts/vscode.proposed.opencodeEditor.d.ts",
 		"vs/workbench/contrib/webview/browser/pre/service-worker.js"
 	]
 }
