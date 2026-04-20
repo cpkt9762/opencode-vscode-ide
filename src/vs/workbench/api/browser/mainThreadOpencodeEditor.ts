@@ -73,18 +73,21 @@ export class MainThreadOpencodeEditor extends Disposable implements MainThreadOp
 	}
 
 	override dispose(): void {
-		for (const id of [...this._viewZones.keys()]) {
-			this._disposeViewZone(id);
+		for (const entry of this._viewZones.values()) {
+			entry.editor.changeViewZones(accessor => accessor.removeZone(entry.zoneId));
 		}
 
-		for (const id of [...this._overlayWidgets.keys()]) {
-			this._disposeOverlayWidget(id);
+		for (const entry of this._overlayWidgets.values()) {
+			entry.editor.removeOverlayWidget(entry.widget);
 		}
 
-		for (const id of [...this._contentWidgets.keys()]) {
-			this._disposeContentWidget(id);
+		for (const entry of this._contentWidgets.values()) {
+			entry.editor.removeContentWidget(entry.widget);
 		}
 
+		this._viewZones.clear();
+		this._overlayWidgets.clear();
+		this._contentWidgets.clear();
 		super.dispose();
 	}
 
