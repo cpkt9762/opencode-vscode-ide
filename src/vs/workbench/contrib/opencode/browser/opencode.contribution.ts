@@ -14,11 +14,13 @@ import { Registry } from "../../../../platform/registry/common/platform.js";
 import type { IWorkbenchContributionsRegistry } from "../../../common/contributions.js";
 import { Extensions as WorkbenchExtensions } from "../../../common/contributions.js";
 import { LifecyclePhase } from "../../../services/lifecycle/common/lifecycle.js";
-import "./sidebarPane.js";
+import { IEditCodeService } from "../common/editCodeServiceTypes.js";
 import {
 	IOpencodeEditorService,
 	OpencodeEditorService,
 } from "../common/opencodeEditorService.js";
+import { EditCodeService } from "./editCodeService.js";
+import "./sidebarPane.js";
 
 class OpencodeWorkbenchContribution extends Disposable {
 	static readonly ID = "workbench.contrib.opencode";
@@ -41,5 +43,10 @@ Registry.as<IWorkbenchContributionsRegistry>(
 registerSingleton(
 	IOpencodeEditorService,
 	OpencodeEditorService,
+	InstantiationType.Delayed,
+);
+registerSingleton(
+	IEditCodeService,
+	EditCodeService,
 	InstantiationType.Delayed,
 );
