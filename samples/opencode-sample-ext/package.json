@@ -1,0 +1,53 @@
+{
+  "name": "opencode-sample-ext",
+  "displayName": "OpenCode Sample Extension",
+  "description": "Sample extension for testing opencodeEditor proposed API",
+  "version": "0.0.1",
+  "publisher": "opencode",
+  "engines": {
+    "vscode": "^1.116.0"
+  },
+  "enabledApiProposals": [
+    "opencodeEditor"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "opencode-sample.createViewZone",
+        "title": "OpenCode: Create ViewZone"
+      },
+      {
+        "command": "opencode-sample.createOverlayWidget",
+        "title": "OpenCode: Create OverlayWidget"
+      },
+      {
+        "command": "opencode-sample.createContentWidget",
+        "title": "OpenCode: Create ContentWidget"
+      },
+      {
+        "command": "opencode-sample.disposeViewZone",
+        "title": "OpenCode: Dispose ViewZone"
+      },
+      {
+        "command": "opencode-sample.disposeOverlayWidget",
+        "title": "OpenCode: Dispose OverlayWidget"
+      },
+      {
+        "command": "opencode-sample.disposeContentWidget",
+        "title": "OpenCode: Dispose ContentWidget"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./tsconfig.json",
+    "watch": "tsc -watch -p ./tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.116.0"
+  }
+}

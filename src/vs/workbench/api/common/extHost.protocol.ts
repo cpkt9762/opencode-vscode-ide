@@ -846,6 +846,47 @@ export interface ExtHostEditorInsetsShape {
 	$onDidReceiveMessage(handle: number, message: any): void;
 }
 
+export interface WidgetCommandDTO {
+	selector: string;
+	event: 'click' | 'keydown';
+	command: string;
+	args?: unknown[];
+}
+
+export interface WidgetContentDTO {
+	html: string;
+	style?: { readonly [cssProperty: string]: string };
+	commands?: readonly WidgetCommandDTO[];
+}
+
+export interface OverlayWidgetPositionDTO {
+	preference: 'TOP_RIGHT_CORNER' | 'BOTTOM_RIGHT_CORNER' | null;
+}
+
+export interface ContentWidgetPositionDTO {
+	line: number;
+	column: number;
+}
+
+export interface MainThreadOpencodeEditorShape extends IDisposable {
+	$createViewZone(args: { id: string; editorId: string; afterLineNumber: number; heightInLines: number; content: WidgetContentDTO }): Promise<void>;
+	$updateViewZone(id: string, content: WidgetContentDTO): Promise<void>;
+	$setViewZoneHeight(id: string, heightInLines: number): Promise<void>;
+	$disposeViewZone(id: string): Promise<void>;
+	$createOverlayWidget(args: { id: string; editorId: string; content: WidgetContentDTO; position: OverlayWidgetPositionDTO }): Promise<void>;
+	$updateOverlayWidget(id: string, content: WidgetContentDTO): Promise<void>;
+	$updateOverlayWidgetPosition(id: string, position: OverlayWidgetPositionDTO): Promise<void>;
+	$disposeOverlayWidget(id: string): Promise<void>;
+	$createContentWidget(args: { id: string; editorId: string; content: WidgetContentDTO; position: ContentWidgetPositionDTO }): Promise<void>;
+	$updateContentWidget(id: string, content: WidgetContentDTO): Promise<void>;
+	$updateContentWidgetPosition(id: string, position: ContentWidgetPositionDTO): Promise<void>;
+	$disposeContentWidget(id: string): Promise<void>;
+}
+
+export interface ExtHostOpencodeEditorShape {
+	readonly _extHostOpencodeEditorShapeBrand?: never;
+}
+
 //#region --- tabs model
 
 export const enum TabInputKind {
@@ -3829,6 +3870,7 @@ export const MainContext = {
 	MainThreadDocumentContentProviders: createProxyIdentifier<MainThreadDocumentContentProvidersShape>('MainThreadDocumentContentProviders'),
 	MainThreadTextEditors: createProxyIdentifier<MainThreadTextEditorsShape>('MainThreadTextEditors'),
 	MainThreadEditorInsets: createProxyIdentifier<MainThreadEditorInsetsShape>('MainThreadEditorInsets'),
+	MainThreadOpencodeEditor: createProxyIdentifier<MainThreadOpencodeEditorShape>('MainThreadOpencodeEditor'),
 	MainThreadEditorTabs: createProxyIdentifier<MainThreadEditorTabsShape>('MainThreadEditorTabs'),
 	MainThreadErrors: createProxyIdentifier<MainThreadErrorsShape>('MainThreadErrors'),
 	MainThreadTreeViews: createProxyIdentifier<MainThreadTreeViewsShape>('MainThreadTreeViews'),
@@ -3929,6 +3971,7 @@ export const ExtHostContext = {
 	ExtHostCustomEditors: createProxyIdentifier<ExtHostCustomEditorsShape>('ExtHostCustomEditors'),
 	ExtHostWebviewViews: createProxyIdentifier<ExtHostWebviewViewsShape>('ExtHostWebviewViews'),
 	ExtHostEditorInsets: createProxyIdentifier<ExtHostEditorInsetsShape>('ExtHostEditorInsets'),
+	ExtHostOpencodeEditor: createProxyIdentifier<ExtHostOpencodeEditorShape>('ExtHostOpencodeEditor'),
 	ExtHostEditorTabs: createProxyIdentifier<IExtHostEditorTabsShape>('ExtHostEditorTabs'),
 	ExtHostProgress: createProxyIdentifier<ExtHostProgressShape>('ExtHostProgress'),
 	ExtHostComments: createProxyIdentifier<ExtHostCommentsShape>('ExtHostComments'),

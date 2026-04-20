@@ -56,6 +56,7 @@ import { ExtHostDocumentContentProvider } from './extHostDocumentContentProvider
 import { ExtHostDocumentSaveParticipant } from './extHostDocumentSaveParticipant.js';
 import { ExtHostDocuments } from './extHostDocuments.js';
 import { IExtHostDocumentsAndEditors } from './extHostDocumentsAndEditors.js';
+import { ExtHostOpencodeEditor } from './extHostOpencodeEditor.js';
 import { IExtHostEditorTabs } from './extHostEditorTabs.js';
 import { ExtHostEmbeddings } from './extHostEmbedding.js';
 import { ExtHostAiEmbeddingVector } from './extHostEmbeddingVector.js';
@@ -214,6 +215,7 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 	const extHostEditors = rpcProtocol.set(ExtHostContext.ExtHostEditors, new ExtHostEditors(rpcProtocol, extHostDocumentsAndEditors));
 	const extHostTreeViews = rpcProtocol.set(ExtHostContext.ExtHostTreeViews, new ExtHostTreeViews(rpcProtocol.getProxy(MainContext.MainThreadTreeViews), extHostCommands, extHostLogService));
 	const extHostEditorInsets = rpcProtocol.set(ExtHostContext.ExtHostEditorInsets, new ExtHostEditorInsets(rpcProtocol.getProxy(MainContext.MainThreadEditorInsets), extHostEditors, initData.remote));
+	const extHostOpencodeEditor = rpcProtocol.set(ExtHostContext.ExtHostOpencodeEditor, new ExtHostOpencodeEditor(rpcProtocol, extHostDocumentsAndEditors));
 	const extHostDiagnostics = rpcProtocol.set(ExtHostContext.ExtHostDiagnostics, new ExtHostDiagnostics(rpcProtocol, extHostLogService, extHostFileSystemInfo, extHostDocumentsAndEditors));
 	const extHostLanguages = rpcProtocol.set(ExtHostContext.ExtHostLanguages, new ExtHostLanguages(rpcProtocol, extHostDocuments, extHostCommands.converter, uriTransformer));
 	const extHostLanguageFeatures = rpcProtocol.set(ExtHostContext.ExtHostLanguageFeatures, new ExtHostLanguageFeatures(rpcProtocol, uriTransformer, extHostDocuments, extHostCommands, extHostDiagnostics, extHostLogService, extHostApiDeprecation, extHostTelemetry));
@@ -1886,6 +1888,22 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 		};
 
 		// namespace: speech
+		const opencodeEditor: typeof vscode.opencodeEditor = {
+			createViewZone(editor: vscode.TextEditor, options: { afterLineNumber: number; heightInLines: number; content: vscode.opencodeEditor.WidgetContent }) {
+				checkProposedApiEnabled(extension, 'opencodeEditor');
+				return extHostOpencodeEditor.createViewZone(editor, options);
+			},
+			createOverlayWidget(editor: vscode.TextEditor, options: { id: string; content: vscode.opencodeEditor.WidgetContent; position: { preference: 'TOP_RIGHT_CORNER' | 'BOTTOM_RIGHT_CORNER' } }) {
+				checkProposedApiEnabled(extension, 'opencodeEditor');
+				return extHostOpencodeEditor.createOverlayWidget(editor, options);
+			},
+			createContentWidget(editor: vscode.TextEditor, options: { id: string; content: vscode.opencodeEditor.WidgetContent; position: { line: number; column: number } }) {
+				checkProposedApiEnabled(extension, 'opencodeEditor');
+				return extHostOpencodeEditor.createContentWidget(editor, options);
+			},
+		};
+
+		// namespace: speech
 		const speech: typeof vscode.speech = {
 			registerSpeechProvider(id: string, provider: vscode.SpeechProvider) {
 				checkProposedApiEnabled(extension, 'speech');
@@ -1910,6 +1928,7 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 			languages,
 			lm,
 			notebooks,
+			opencodeEditor,
 			scm,
 			speech,
 			tasks,

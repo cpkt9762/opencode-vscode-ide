@@ -24,6 +24,7 @@ import './mainThreadChatCodeMapper.js';
 import './mainThreadLanguageModelTools.js';
 import './mainThreadEmbeddings.js';
 import './mainThreadCodeInsets.js';
+import './mainThreadOpencodeEditor.js';
 import './mainThreadCLICommands.js';
 import './mainThreadClipboard.js';
 import './mainThreadCommands.js';
@@ -107,7 +108,7 @@ export class ExtensionPoints implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.extensionPoints';
 
 	constructor(
-		@IInstantiationService private readonly instantiationService: IInstantiationService
+		private readonly instantiationService: IInstantiationService
 	) {
 		// Classes that handle extension points...
 		this.instantiationService.createInstance(JSONValidationExtensionPoint);
@@ -119,5 +120,7 @@ export class ExtensionPoints implements IWorkbenchContribution {
 		this.instantiationService.createInstance(CSSExtensionPoint);
 	}
 }
+
+IInstantiationService(ExtensionPoints, '', 0);
 
 registerWorkbenchContribution2(ExtensionPoints.ID, ExtensionPoints, WorkbenchPhase.BlockStartup);
