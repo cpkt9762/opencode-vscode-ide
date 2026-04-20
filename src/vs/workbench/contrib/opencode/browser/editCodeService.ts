@@ -12,6 +12,8 @@ import type { ITextModel } from '../../../../editor/common/model.js';
 import * as nls from '../../../../nls.js';
 import type { DiffEdit, DiffZoneState, DiffZoneStatus, IDiffZoneWidget, IEditCodeService } from '../common/editCodeServiceTypes.js';
 
+export { IEditCodeService } from '../common/editCodeServiceTypes.js';
+
 const acceptLabel = nls.localize('opencode.diffZone.accept', "Accept");
 const rejectLabel = nls.localize('opencode.diffZone.reject', "Reject");
 const currentLabel = nls.localize('opencode.diffZone.current', "Current");
