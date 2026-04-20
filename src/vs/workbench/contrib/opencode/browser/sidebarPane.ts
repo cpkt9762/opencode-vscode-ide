@@ -28,13 +28,14 @@ import {
 	ViewContainerLocation,
 	Extensions as ViewExtensions,
 } from "../../../common/views.js";
+import { IOpencodeEditorService } from "../common/opencodeEditorService.js";
+import { type IOpencodeMessage, MessageBridge } from "./messageBridge.js";
 import { opencodeIcon } from "./opencodeIcons.js";
 
 export const OPENCODE_VIEW_CONTAINER_ID = "workbench.view.opencode";
 export const OPENCODE_VIEW_ID = "workbench.view.opencode.chat";
 
 const opencodeMediaPath = "vs/workbench/contrib/opencode/media";
-const opencodeServerUrl = "http://localhost:4096";
 const opencodeContainerTitle = nls.localize2(
 	"opencodeViewContainerTitle",
 	"OpenCode",
@@ -49,6 +50,7 @@ const escapeAttribute = (value: string) =>
 
 export class OpencodeSidebarPane extends ViewPane {
 	private readonly html: string;
+	private readonly messageBridge: MessageBridge;
 	private iframe: HTMLIFrameElement | undefined;
 
 	constructor(
@@ -62,6 +64,7 @@ export class OpencodeSidebarPane extends ViewPane {
 		openerService: IOpenerService,
 		themeService: IThemeService,
 		hoverService: IHoverService,
+		private readonly opencodeEditorService: IOpencodeEditorService,
 	) {
 		super(
 			options,
@@ -76,6 +79,12 @@ export class OpencodeSidebarPane extends ViewPane {
 			hoverService,
 		);
 
+		this.messageBridge = this._register(new MessageBridge());
+		this._register(
+			this.messageBridge.onMessage((message) => {
+				void this.handleMessage(message);
+			}),
+		);
 		this.html = this.buildSpaHtml();
 	}
 
@@ -100,9 +109,11 @@ export class OpencodeSidebarPane extends ViewPane {
 
 		container.appendChild(iframe);
 		this.iframe = iframe;
+		this.messageBridge.setIframe(iframe);
 		this._register(
 			toDisposable(() => {
 				this.iframe = undefined;
+				this.messageBridge.setIframe(undefined);
 				iframe.remove();
 			}),
 		);
@@ -119,6 +130,47 @@ export class OpencodeSidebarPane extends ViewPane {
 		this.iframe.style.width = `${width}px`;
 	}
 
+	private async handleMessage(message: IOpencodeMessage): Promise<void> {
+		if (message.type === 'ready') {
+			this.messageBridge.send({
+				type: 'config',
+				payload: {
+					theme: this.themeService.getColorTheme().type,
+					serverUrl: this.opencodeEditorService.getServerUrl(),
+				},
+			});
+			return;
+		}
+
+		if (message.type !== 'llm-request') {
+			return;
+		}
+
+		const prompt = this.getPrompt(message.payload);
+		const response = await this.opencodeEditorService.sendLLMRequest(prompt);
+		this.messageBridge.send({
+			type: 'llm-response',
+			id: message.id,
+			payload: {
+				prompt,
+				response,
+			},
+		});
+	}
+
+	private getPrompt(payload: unknown): string {
+		if (typeof payload === 'string') {
+			return payload;
+		}
+
+		if (!payload || typeof payload !== 'object') {
+			return '';
+		}
+
+		const prompt = (payload as { prompt?: unknown }).prompt;
+		return typeof prompt === 'string' ? prompt : '';
+	}
+
 	private buildSpaHtml(): string {
 		const baseHref = `${FileAccess.asBrowserUri(opencodeMediaPath).toString(true)}/`;
 		const cssHref = FileAccess.asBrowserUri(
@@ -127,6 +179,7 @@ export class OpencodeSidebarPane extends ViewPane {
 		const scriptHref = FileAccess.asBrowserUri(
 			`${opencodeMediaPath}/opencode-spa.js`,
 		).toString(true);
+		const serverUrl = this.opencodeEditorService.getServerUrl();
 
 		return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -180,7 +233,7 @@ export class OpencodeSidebarPane extends ViewPane {
 				themeId = localStorage.getItem(themeIdKey) || themeId;
 				scheme = localStorage.getItem("opencode-color-scheme") || scheme;
 				if (!localStorage.getItem(serverUrlKey)) {
-					localStorage.setItem(serverUrlKey, ${JSON.stringify(opencodeServerUrl)});
+					localStorage.setItem(serverUrlKey, ${JSON.stringify(serverUrl)});
 				}
 			} catch {
 				// Ignore storage failures in sandboxed environments.
@@ -220,6 +273,7 @@ IInstantiationService(OpencodeSidebarPane, "", 6);
 IOpenerService(OpencodeSidebarPane, "", 7);
 IThemeService(OpencodeSidebarPane, "", 8);
 IHoverService(OpencodeSidebarPane, "", 9);
+IOpencodeEditorService(OpencodeSidebarPane, "", 10);
 
 const opencodeViewContainer = Registry.as<IViewContainersRegistry>(
 	ViewExtensions.ViewContainersRegistry,
