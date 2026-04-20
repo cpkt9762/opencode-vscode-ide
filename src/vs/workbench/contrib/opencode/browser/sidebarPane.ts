@@ -28,7 +28,9 @@ import {
 	ViewContainerLocation,
 	Extensions as ViewExtensions,
 } from "../../../common/views.js";
+import type { DiffEdit } from "../common/editCodeServiceTypes.js";
 import { IOpencodeEditorService } from "../common/opencodeEditorService.js";
+import { IEditCodeService } from "./editCodeService.js";
 import { type IOpencodeMessage, MessageBridge } from "./messageBridge.js";
 import { opencodeIcon } from "./opencodeIcons.js";
 
@@ -65,6 +67,7 @@ export class OpencodeSidebarPane extends ViewPane {
 		themeService: IThemeService,
 		hoverService: IHoverService,
 		private readonly opencodeEditorService: IOpencodeEditorService,
+		private readonly editCodeService: IEditCodeService,
 	) {
 		super(
 			options,
@@ -131,44 +134,40 @@ export class OpencodeSidebarPane extends ViewPane {
 	}
 
 	private async handleMessage(message: IOpencodeMessage): Promise<void> {
-		if (message.type === 'ready') {
-			this.messageBridge.send({
-				type: 'config',
-				payload: {
-					theme: this.themeService.getColorTheme().type,
-					serverUrl: this.opencodeEditorService.getServerUrl(),
-				},
-			});
-			return;
+		switch (message.type) {
+			case 'ready': {
+				this.messageBridge.send({
+					type: 'config',
+					payload: {
+						theme: this.themeService.getColorTheme().type,
+						serverUrl: this.opencodeEditorService.getServerUrl(),
+					},
+				});
+				return;
+			}
+
+			case 'apply-diff-edit': {
+				const { editorId, edits } = message.payload as { editorId: string; edits: DiffEdit[] };
+				const zoneId = this.editCodeService.createDiffZone(editorId, edits);
+				this.messageBridge.send({
+					type: 'diff-zone-created',
+					id: message.id,
+					payload: { zoneId },
+				});
+				return;
+			}
+
+			case 'llm-request': {
+				const { prompt } = message.payload as { prompt: string };
+				const response = await this.opencodeEditorService.sendLLMRequest(prompt);
+				this.messageBridge.send({
+					type: 'llm-response',
+					id: message.id,
+					payload: { response },
+				});
+				return;
+			}
 		}
-
-		if (message.type !== 'llm-request') {
-			return;
-		}
-
-		const prompt = this.getPrompt(message.payload);
-		const response = await this.opencodeEditorService.sendLLMRequest(prompt);
-		this.messageBridge.send({
-			type: 'llm-response',
-			id: message.id,
-			payload: {
-				prompt,
-				response,
-			},
-		});
-	}
-
-	private getPrompt(payload: unknown): string {
-		if (typeof payload === 'string') {
-			return payload;
-		}
-
-		if (!payload || typeof payload !== 'object') {
-			return '';
-		}
-
-		const prompt = (payload as { prompt?: unknown }).prompt;
-		return typeof prompt === 'string' ? prompt : '';
 	}
 
 	private buildSpaHtml(): string {
@@ -274,6 +273,7 @@ IOpenerService(OpencodeSidebarPane, "", 7);
 IThemeService(OpencodeSidebarPane, "", 8);
 IHoverService(OpencodeSidebarPane, "", 9);
 IOpencodeEditorService(OpencodeSidebarPane, "", 10);
+IEditCodeService(OpencodeSidebarPane, "", 11);
 
 const opencodeViewContainer = Registry.as<IViewContainersRegistry>(
 	ViewExtensions.ViewContainersRegistry,
