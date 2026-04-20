@@ -4,110 +4,34 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { safeSetInnerHtml } from '../../../base/browser/domSanitize.js';
-import { Disposable, DisposableMap } from '../../../base/common/lifecycle.js';
-import { ContentWidgetPositionPreference, ICodeEditor, IContentWidget, IContentWidgetPosition, IOverlayWidget, IOverlayWidgetPosition, IViewZone, OverlayWidgetPositionPreference } from '../../../editor/browser/editorBrowser.js';
+import { Disposable } from '../../../base/common/lifecycle.js';
+import { ContentWidgetPositionPreference, type ICodeEditor, type IContentWidget, type IContentWidgetPosition, type IOverlayWidget, type IOverlayWidgetPosition, type IViewZone, OverlayWidgetPositionPreference } from '../../../editor/browser/editorBrowser.js';
 import { ICodeEditorService } from '../../../editor/browser/services/codeEditorService.js';
+import { EditorOption } from '../../../editor/common/config/editorOptions.js';
 import { Position } from '../../../editor/common/core/position.js';
-import { extHostNamedCustomer, IExtHostContext } from '../../services/extensions/common/extHostCustomers.js';
-import { ContentWidgetPositionDTO, ExtHostContext, ExtHostOpencodeEditorShape, MainContext, MainThreadOpencodeEditorShape, OverlayWidgetPositionDTO, WidgetContentDTO } from '../common/extHost.protocol.js';
+import { extHostNamedCustomer, type IExtHostContext } from '../../services/extensions/common/extHostCustomers.js';
+import { type ContentWidgetPositionDTO, ExtHostContext, type ExtHostOpencodeEditorShape, MainContext, type MainThreadOpencodeEditorShape, type OverlayWidgetPositionDTO, type WidgetContentDTO } from '../common/extHost.protocol.js';
 
-type MutableViewZone = IViewZone & { heightInLines: number };
+type ViewZoneEntry = {
+	editor: ICodeEditor;
+	domNode: HTMLElement;
+	zone: IViewZone & { heightInLines: number };
+	zoneId: string;
+};
 
-class OpencodeViewZoneEntry {
-	constructor(
-		readonly editor: ICodeEditor,
-		readonly domNode: HTMLElement,
-		private readonly _zone: MutableViewZone,
-		private readonly _zoneId: string,
-	) {
-	}
+type OverlayWidgetEntry = {
+	editor: ICodeEditor;
+	domNode: HTMLElement;
+	widget: IOverlayWidget;
+	position: IOverlayWidgetPosition | null;
+};
 
-	updateHeight(heightInLines: number): void {
-		this._zone.heightInLines = heightInLines;
-		this.layout();
-	}
-
-	layout(): void {
-		this.editor.changeViewZones(accessor => accessor.layoutZone(this._zoneId));
-	}
-
-	dispose(): void {
-		this.editor.changeViewZones(accessor => accessor.removeZone(this._zoneId));
-	}
-}
-
-class OpencodeOverlayWidgetEntry implements IOverlayWidget {
-	allowEditorOverflow = true;
-	private _position: IOverlayWidgetPosition | null;
-
-	constructor(
-		readonly editor: ICodeEditor,
-		private readonly _id: string,
-		private readonly _domNode: HTMLElement,
-		position: OverlayWidgetPositionDTO,
-	) {
-		this._position = { preference: toOverlayWidgetPreference(position.preference) };
-		this.editor.addOverlayWidget(this);
-	}
-
-	getId(): string {
-		return this._id;
-	}
-
-	getDomNode(): HTMLElement {
-		return this._domNode;
-	}
-
-	getPosition(): IOverlayWidgetPosition | null {
-		return this._position;
-	}
-
-	updatePosition(position: OverlayWidgetPositionDTO): void {
-		this._position = { preference: toOverlayWidgetPreference(position.preference) };
-		this.editor.layoutOverlayWidget(this);
-	}
-
-	dispose(): void {
-		this.editor.removeOverlayWidget(this);
-	}
-}
-
-class OpencodeContentWidgetEntry implements IContentWidget {
-	allowEditorOverflow = true;
-	suppressMouseDown = false;
-	private _position: IContentWidgetPosition | null;
-
-	constructor(
-		readonly editor: ICodeEditor,
-		private readonly _id: string,
-		private readonly _domNode: HTMLElement,
-		position: ContentWidgetPositionDTO,
-	) {
-		this._position = toContentWidgetPosition(position);
-		this.editor.addContentWidget(this);
-	}
-
-	getId(): string {
-		return this._id;
-	}
-
-	getDomNode(): HTMLElement {
-		return this._domNode;
-	}
-
-	getPosition(): IContentWidgetPosition | null {
-		return this._position;
-	}
-
-	updatePosition(position: ContentWidgetPositionDTO): void {
-		this._position = toContentWidgetPosition(position);
-		this.editor.layoutContentWidget(this);
-	}
-
-	dispose(): void {
-		this.editor.removeContentWidget(this);
-	}
-}
+type ContentWidgetEntry = {
+	editor: ICodeEditor;
+	domNode: HTMLElement;
+	widget: IContentWidget;
+	position: { lineNumber: number; column: number };
+};
 
 function toOverlayWidgetPreference(preference: OverlayWidgetPositionDTO['preference']) {
 	if (preference === 'TOP_RIGHT_CORNER') {
@@ -121,9 +45,13 @@ function toOverlayWidgetPreference(preference: OverlayWidgetPositionDTO['prefere
 	return null;
 }
 
-function toContentWidgetPosition(position: ContentWidgetPositionDTO): IContentWidgetPosition {
+function toOverlayWidgetPosition(position: OverlayWidgetPositionDTO): IOverlayWidgetPosition {
+	return { preference: toOverlayWidgetPreference(position.preference) };
+}
+
+function toContentWidgetPosition(position: { lineNumber: number; column: number }): IContentWidgetPosition {
 	return {
-		position: new Position(position.line, position.column),
+		position: new Position(position.lineNumber, position.column),
 		preference: [ContentWidgetPositionPreference.EXACT],
 	};
 }
@@ -131,9 +59,9 @@ function toContentWidgetPosition(position: ContentWidgetPositionDTO): IContentWi
 @extHostNamedCustomer(MainContext.MainThreadOpencodeEditor)
 export class MainThreadOpencodeEditor extends Disposable implements MainThreadOpencodeEditorShape {
 	private readonly _proxy: ExtHostOpencodeEditorShape;
-	private readonly _viewZones = this._register(new DisposableMap<string, OpencodeViewZoneEntry>());
-	private readonly _overlays = this._register(new DisposableMap<string, OpencodeOverlayWidgetEntry>());
-	private readonly _contents = this._register(new DisposableMap<string, OpencodeContentWidgetEntry>());
+	private readonly _viewZones = new Map<string, ViewZoneEntry>();
+	private readonly _overlayWidgets = new Map<string, OverlayWidgetEntry>();
+	private readonly _contentWidgets = new Map<string, ContentWidgetEntry>();
 
 	constructor(
 		extHostContext: IExtHostContext,
@@ -142,6 +70,22 @@ export class MainThreadOpencodeEditor extends Disposable implements MainThreadOp
 		super();
 		this._proxy = extHostContext.getProxy(ExtHostContext.ExtHostOpencodeEditor);
 		void this._proxy;
+	}
+
+	override dispose(): void {
+		for (const id of [...this._viewZones.keys()]) {
+			this._disposeViewZone(id);
+		}
+
+		for (const id of [...this._overlayWidgets.keys()]) {
+			this._disposeOverlayWidget(id);
+		}
+
+		for (const id of [...this._contentWidgets.keys()]) {
+			this._disposeContentWidget(id);
+		}
+
+		super.dispose();
 	}
 
 	private _resolveEditor(compositeId: string): ICodeEditor {
@@ -173,7 +117,11 @@ export class MainThreadOpencodeEditor extends Disposable implements MainThreadOp
 		}
 	}
 
-	private _getViewZone(id: string): OpencodeViewZoneEntry {
+	private _setViewZoneDomHeight(editor: ICodeEditor, domNode: HTMLElement, heightInLines: number): void {
+		domNode.style.height = `${heightInLines * editor.getOption(EditorOption.lineHeight)}px`;
+	}
+
+	private _getViewZone(id: string): ViewZoneEntry {
 		const entry = this._viewZones.get(id);
 		if (!entry) {
 			throw new Error(`[opencode] unknown view zone ${id}`);
@@ -181,101 +129,155 @@ export class MainThreadOpencodeEditor extends Disposable implements MainThreadOp
 		return entry;
 	}
 
-	private _getOverlay(id: string): OpencodeOverlayWidgetEntry {
-		const entry = this._overlays.get(id);
+	private _getOverlayWidget(id: string): OverlayWidgetEntry {
+		const entry = this._overlayWidgets.get(id);
 		if (!entry) {
 			throw new Error(`[opencode] unknown overlay widget ${id}`);
 		}
 		return entry;
 	}
 
-	private _getContent(id: string): OpencodeContentWidgetEntry {
-		const entry = this._contents.get(id);
+	private _getContentWidget(id: string): ContentWidgetEntry {
+		const entry = this._contentWidgets.get(id);
 		if (!entry) {
 			throw new Error(`[opencode] unknown content widget ${id}`);
 		}
 		return entry;
 	}
 
+	private _disposeViewZone(id: string): void {
+		const entry = this._viewZones.get(id);
+		if (!entry) {
+			return;
+		}
+
+		this._viewZones.delete(id);
+		entry.editor.changeViewZones(accessor => accessor.removeZone(entry.zoneId));
+	}
+
+	private _disposeOverlayWidget(id: string): void {
+		const entry = this._overlayWidgets.get(id);
+		if (!entry) {
+			return;
+		}
+
+		this._overlayWidgets.delete(id);
+		entry.editor.removeOverlayWidget(entry.widget);
+	}
+
+	private _disposeContentWidget(id: string): void {
+		const entry = this._contentWidgets.get(id);
+		if (!entry) {
+			return;
+		}
+
+		this._contentWidgets.delete(id);
+		entry.editor.removeContentWidget(entry.widget);
+	}
+
 	async $createViewZone(args: { id: string; editorId: string; afterLineNumber: number; heightInLines: number; content: WidgetContentDTO }): Promise<void> {
-		console.log(`[mainThreadOpencodeEditor] $createViewZone id=${args.id}`);
+		this._disposeViewZone(args.id);
 		const editor = this._resolveEditor(args.editorId);
 		const domNode = this._renderContent(args.content, args.id);
-		const zone: MutableViewZone = {
+		this._setViewZoneDomHeight(editor, domNode, args.heightInLines);
+		const zone: IViewZone & { heightInLines: number } = {
 			afterLineNumber: args.afterLineNumber,
 			heightInLines: args.heightInLines,
 			domNode,
 		};
-		let zoneId = '';
+		const entry = { editor, domNode, zone, zoneId: '' };
 		editor.changeViewZones(accessor => {
-			zoneId = accessor.addZone(zone);
+			entry.zoneId = accessor.addZone(zone);
+			this._viewZones.set(args.id, entry);
 		});
-		this._viewZones.set(args.id, new OpencodeViewZoneEntry(editor, domNode, zone, zoneId));
 	}
 
 	async $updateViewZone(id: string, content: WidgetContentDTO): Promise<void> {
-		console.log(`[mainThreadOpencodeEditor] $updateViewZone id=${id}`);
 		const entry = this._getViewZone(id);
 		this._updateContent(entry.domNode, content, id);
-		entry.layout();
+		this._setViewZoneDomHeight(entry.editor, entry.domNode, entry.zone.heightInLines);
+		entry.editor.changeViewZones(accessor => accessor.layoutZone(entry.zoneId));
 	}
 
 	async $setViewZoneHeight(id: string, heightInLines: number): Promise<void> {
-		console.log(`[mainThreadOpencodeEditor] $setViewZoneHeight id=${id}`);
-		this._getViewZone(id).updateHeight(heightInLines);
+		const entry = this._getViewZone(id);
+		entry.zone.heightInLines = heightInLines;
+		this._setViewZoneDomHeight(entry.editor, entry.domNode, heightInLines);
+		entry.editor.changeViewZones(accessor => accessor.layoutZone(entry.zoneId));
 	}
 
 	async $disposeViewZone(id: string): Promise<void> {
-		console.log(`[mainThreadOpencodeEditor] $disposeViewZone id=${id}`);
-		this._viewZones.deleteAndDispose(id);
+		this._disposeViewZone(id);
 	}
 
 	async $createOverlayWidget(args: { id: string; editorId: string; content: WidgetContentDTO; position: OverlayWidgetPositionDTO }): Promise<void> {
-		console.log(`[mainThreadOpencodeEditor] $createOverlayWidget id=${args.id}`);
+		this._disposeOverlayWidget(args.id);
 		const editor = this._resolveEditor(args.editorId);
 		const domNode = this._renderContent(args.content, args.id);
-		this._overlays.set(args.id, new OpencodeOverlayWidgetEntry(editor, args.id, domNode, args.position));
+		let entry: OverlayWidgetEntry;
+		const widget: IOverlayWidget = {
+			allowEditorOverflow: true,
+			getId: () => `opencode.overlay.${args.id}`,
+			getDomNode: () => domNode,
+			getPosition: () => entry.position,
+		};
+		entry = { editor, domNode, widget, position: toOverlayWidgetPosition(args.position) };
+		editor.addOverlayWidget(widget);
+		this._overlayWidgets.set(args.id, entry);
 	}
 
 	async $updateOverlayWidget(id: string, content: WidgetContentDTO): Promise<void> {
-		console.log(`[mainThreadOpencodeEditor] $updateOverlayWidget id=${id}`);
-		const entry = this._getOverlay(id);
-		this._updateContent(entry.getDomNode(), content, id);
-		entry.editor.layoutOverlayWidget(entry);
+		const entry = this._getOverlayWidget(id);
+		this._updateContent(entry.domNode, content, id);
+		entry.editor.layoutOverlayWidget(entry.widget);
 	}
 
 	async $updateOverlayWidgetPosition(id: string, position: OverlayWidgetPositionDTO): Promise<void> {
-		console.log(`[mainThreadOpencodeEditor] $updateOverlayWidgetPosition id=${id}`);
-		this._getOverlay(id).updatePosition(position);
+		const entry = this._getOverlayWidget(id);
+		entry.position = toOverlayWidgetPosition(position);
+		entry.editor.layoutOverlayWidget(entry.widget);
 	}
 
 	async $disposeOverlayWidget(id: string): Promise<void> {
-		console.log(`[mainThreadOpencodeEditor] $disposeOverlayWidget id=${id}`);
-		this._overlays.deleteAndDispose(id);
+		this._disposeOverlayWidget(id);
 	}
 
 	async $createContentWidget(args: { id: string; editorId: string; content: WidgetContentDTO; position: ContentWidgetPositionDTO }): Promise<void> {
-		console.log(`[mainThreadOpencodeEditor] $createContentWidget id=${args.id}`);
+		this._disposeContentWidget(args.id);
 		const editor = this._resolveEditor(args.editorId);
 		const domNode = this._renderContent(args.content, args.id);
-		this._contents.set(args.id, new OpencodeContentWidgetEntry(editor, args.id, domNode, args.position));
+		let entry: ContentWidgetEntry;
+		const widget: IContentWidget = {
+			allowEditorOverflow: true,
+			suppressMouseDown: false,
+			getId: () => `opencode.content.${args.id}`,
+			getDomNode: () => domNode,
+			getPosition: () => toContentWidgetPosition(entry.position),
+		};
+		entry = {
+			editor,
+			domNode,
+			widget,
+			position: { lineNumber: args.position.line, column: args.position.column },
+		};
+		editor.addContentWidget(widget);
+		this._contentWidgets.set(args.id, entry);
 	}
 
 	async $updateContentWidget(id: string, content: WidgetContentDTO): Promise<void> {
-		console.log(`[mainThreadOpencodeEditor] $updateContentWidget id=${id}`);
-		const entry = this._getContent(id);
-		this._updateContent(entry.getDomNode(), content, id);
-		entry.editor.layoutContentWidget(entry);
+		const entry = this._getContentWidget(id);
+		this._updateContent(entry.domNode, content, id);
+		entry.editor.layoutContentWidget(entry.widget);
 	}
 
 	async $updateContentWidgetPosition(id: string, position: ContentWidgetPositionDTO): Promise<void> {
-		console.log(`[mainThreadOpencodeEditor] $updateContentWidgetPosition id=${id}`);
-		this._getContent(id).updatePosition(position);
+		const entry = this._getContentWidget(id);
+		entry.position = { lineNumber: position.line, column: position.column };
+		entry.editor.layoutContentWidget(entry.widget);
 	}
 
 	async $disposeContentWidget(id: string): Promise<void> {
-		console.log(`[mainThreadOpencodeEditor] $disposeContentWidget id=${id}`);
-		this._contents.deleteAndDispose(id);
+		this._disposeContentWidget(id);
 	}
 }
 
