@@ -190,6 +190,9 @@ import './contrib/emergencyAlert/electron-browser/emergencyAlert.contribution.js
 // MCP
 import './contrib/mcp/electron-browser/mcp.contribution.js';
 
+// OpenCode
+import './contrib/opencode/electron-main/spaProxy.js';
+
 // Policy Export
 import './contrib/policyExport/electron-browser/policyExport.contribution.js';
 
