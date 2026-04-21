@@ -98,6 +98,9 @@ const vscodeResourceIncludes = [
 	// Welcome
 	'out-build/vs/workbench/contrib/welcomeGettingStarted/common/media/**/*.{svg,png}',
 
+	// OpenCode SPA
+	'out-build/vs/workbench/contrib/opencode/media/spa/**',
+
 	// Sessions
 	'out-build/vs/sessions/contrib/chat/browser/media/*.svg',
 	'out-build/vs/sessions/contrib/welcome/browser/media/*.svg',
