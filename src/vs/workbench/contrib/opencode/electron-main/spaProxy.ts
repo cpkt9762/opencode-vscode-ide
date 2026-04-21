@@ -12,7 +12,6 @@ import { IOpencodeServeManager } from './opencodeServeManager.js';
 import { ISpaProxyService } from './spaProxyService.js';
 
 const BACKEND_UNAVAILABLE = 'backend unavailable';
-const CORS_HEADER = 'Access-Control-Allow-Origin';
 const HEALTH = '/opencode-spa-health';
 
 const MIME = {
@@ -456,12 +455,8 @@ type ServeOptions = {
 	url: URL;
 };
 
-function withCors(headers: OutgoingHttpHeaders = {}) {
-	return { ...headers, [CORS_HEADER]: '*' } satisfies OutgoingHttpHeaders;
-}
-
 function writeResponse(res: ServerResponse, statusCode: number, body: Buffer | string, headers: OutgoingHttpHeaders = {}) {
-	res.writeHead(statusCode, withCors(headers));
+	res.writeHead(statusCode, headers);
 	res.end(body);
 }
 
@@ -576,7 +571,7 @@ export function proxy(incoming: IncomingMessage, res: ServerResponse, backend: U
 		},
 		upstream => {
 			const live = want || sse(upstream.headers['content-type']);
-			res.writeHead(upstream.statusCode ?? 502, withCors(upstream.headers));
+			res.writeHead(upstream.statusCode ?? 502, upstream.headers);
 			if (!live) {
 				upstream.pipe(res);
 				return;

@@ -439,7 +439,7 @@ suite('SpaProxy', () => {
 		}
 	});
 
-	test('CORS header present', async () => {
+	test('no CORS wildcard header', async () => {
 		const dist = createDist({ 'index.html': '<!doctype html><html><head></head><body></body></html>' });
 		const backend = createServer((_request, response) => {
 			response.writeHead(200, { 'content-type': 'application/json' });
@@ -451,7 +451,7 @@ suite('SpaProxy', () => {
 
 		try {
 			const response = await get(site.port, '/');
-			assert.ok(response.headers['access-control-allow-origin']);
+			assert.strictEqual(response.headers['access-control-allow-origin'], undefined);
 		} finally {
 			await closeServer(site.server);
 			await closeServer(backend);
