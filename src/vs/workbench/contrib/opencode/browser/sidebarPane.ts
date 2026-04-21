@@ -6,6 +6,8 @@ import { Orientation } from "../../../../base/browser/ui/sash/sash.js";
 import { toDisposable } from "../../../../base/common/lifecycle.js";
 import { FileAccess } from "../../../../base/common/network.js";
 import * as nls from "../../../../nls.js";
+import { IClipboardService } from "../../../../platform/clipboard/common/clipboardService.js";
+import { ICommandService } from "../../../../platform/commands/common/commands.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
 import { IContextKeyService } from "../../../../platform/contextkey/common/contextkey.js";
 import { IContextMenuService } from "../../../../platform/contextview/browser/contextView.js";
@@ -13,9 +15,11 @@ import { IHoverService } from "../../../../platform/hover/browser/hover.js";
 import { SyncDescriptor } from "../../../../platform/instantiation/common/descriptors.js";
 import { IInstantiationService } from "../../../../platform/instantiation/common/instantiation.js";
 import { IKeybindingService } from "../../../../platform/keybinding/common/keybinding.js";
+import { ILogService } from "../../../../platform/log/common/log.js";
 import { IOpenerService } from "../../../../platform/opener/common/opener.js";
 import { Registry } from "../../../../platform/registry/common/platform.js";
 import { IThemeService } from "../../../../platform/theme/common/themeService.js";
+import { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
 import {
 	type IViewPaneOptions,
 	ViewPane,
@@ -30,6 +34,7 @@ import {
 } from "../../../common/views.js";
 import type { DiffEdit } from "../common/editCodeServiceTypes.js";
 import { IOpencodeEditorService } from "../common/opencodeEditorService.js";
+import { ISpaProxyService } from "../electron-main/spaProxyService.js";
 import { IEditCodeService } from "./editCodeService.js";
 import { type IOpencodeMessage, MessageBridge } from "./messageBridge.js";
 import { opencodeIcon } from "./opencodeIcons.js";
@@ -37,22 +42,32 @@ import { opencodeIcon } from "./opencodeIcons.js";
 export const OPENCODE_VIEW_CONTAINER_ID = "workbench.view.opencode";
 export const OPENCODE_VIEW_ID = "workbench.view.opencode.chat";
 
-const opencodeMediaPath = "vs/workbench/contrib/opencode/media";
+const opencodeSpaPath = "vs/workbench/contrib/opencode/media/spa";
 const opencodeContainerTitle = nls.localize2(
 	"opencodeViewContainerTitle",
 	"OpenCode",
 );
 const opencodeViewTitle = nls.localize2("opencodeViewTitle", "Chat");
+const loadingTimeout = 8000;
+const allowedCommands = new Set([
+	"workbench.action.terminal.toggleTerminal",
+	"workbench.view.explorer",
+]);
 
-const escapeAttribute = (value: string) =>
-	value
-		.replaceAll("&", "&amp;")
-		.replaceAll('"', "&quot;")
-		.replaceAll("<", "&lt;");
+type SidebarState = "loading" | "ready" | "error" | "no-project";
 
 export class OpencodeSidebarPane extends ViewPane {
-	private readonly html: string;
 	private readonly messageBridge: MessageBridge;
+	private state: SidebarState = "loading";
+	private loadingTimer: ReturnType<typeof setTimeout> | undefined;
+	private bodyRoot: HTMLElement | undefined;
+	private shell: HTMLElement | undefined;
+	private loadingView: HTMLElement | undefined;
+	private errorView: HTMLElement | undefined;
+	private noProjectView: HTMLElement | undefined;
+	private iframeUrl: string | undefined;
+	private loadRequest = 0;
+	private workspaceDir = "";
 	private iframe: HTMLIFrameElement | undefined;
 
 	constructor(
@@ -68,6 +83,8 @@ export class OpencodeSidebarPane extends ViewPane {
 		hoverService: IHoverService,
 		private readonly opencodeEditorService: IOpencodeEditorService,
 		private readonly editCodeService: IEditCodeService,
+		private readonly contextService: IWorkspaceContextService,
+		private readonly spaProxyService: ISpaProxyService,
 	) {
 		super(
 			options,
@@ -88,7 +105,12 @@ export class OpencodeSidebarPane extends ViewPane {
 				void this.handleMessage(message);
 			}),
 		);
-		this.html = this.buildSpaHtml();
+		this._register(
+			toDisposable(() => {
+				this.clearLoadingTimer();
+				this.loadRequest += 1;
+			}),
+		);
 	}
 
 	protected override renderBody(container: HTMLElement): void {
@@ -97,47 +119,203 @@ export class OpencodeSidebarPane extends ViewPane {
 		container.style.padding = "0";
 		container.style.overflow = "hidden";
 		container.style.height = "100%";
+		container.style.position = "relative";
+
+		const animationStyle = document.createElement("style");
+		animationStyle.textContent = "@keyframes opencodeSidebarSpin { to { transform: rotate(360deg); } }";
+		container.appendChild(animationStyle);
+
+		const root = document.createElement("div");
+		root.style.position = "relative";
+		root.style.width = "100%";
+		root.style.height = "100%";
+		root.style.background = "var(--vscode-sideBar-background)";
+
+		const shell = document.createElement("div");
+		shell.style.position = "absolute";
+		shell.style.inset = "0";
+		shell.style.zIndex = "1";
+		shell.style.display = "flex";
+		shell.style.alignItems = "center";
+		shell.style.justifyContent = "center";
+		shell.style.padding = "24px";
+		shell.style.background = "var(--vscode-sideBar-background)";
+
+		const box = document.createElement("div");
+		box.style.width = "min(320px, calc(100% - 48px))";
+		box.style.padding = "24px";
+		box.style.border = "1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.08))";
+		box.style.borderRadius = "16px";
+		box.style.background = "var(--vscode-editorWidget-background, var(--vscode-sideBar-background))";
+		box.style.boxShadow = "0 18px 40px rgba(0, 0, 0, 0.2)";
+		box.style.textAlign = "center";
+		shell.appendChild(box);
+
+		const loadingView = document.createElement("div");
+		const spinner = document.createElement("div");
+		spinner.setAttribute("aria-hidden", "true");
+		spinner.style.width = "28px";
+		spinner.style.height = "28px";
+		spinner.style.margin = "0 auto 14px";
+		spinner.style.border = "3px solid var(--vscode-progressBar-background, rgba(255, 255, 255, 0.2))";
+		spinner.style.borderTopColor = "var(--vscode-textLink-foreground)";
+		spinner.style.borderRadius = "999px";
+		spinner.style.animation = "opencodeSidebarSpin 0.9s linear infinite";
+		loadingView.appendChild(spinner);
+
+		const loadingText = document.createElement("p");
+		loadingText.textContent = nls.localize(
+			"opencodeSidebar.loading",
+			"Connecting to OpenCode…",
+		);
+		loadingText.style.margin = "0";
+		loadingText.style.fontSize = "13px";
+		loadingText.style.lineHeight = "1.5";
+		loadingText.style.color = "var(--vscode-descriptionForeground, var(--vscode-foreground))";
+		loadingView.appendChild(loadingText);
+		box.appendChild(loadingView);
+
+		const errorView = document.createElement("div");
+		errorView.style.display = "none";
+
+		const errorTitle = document.createElement("h2");
+		errorTitle.textContent = nls.localize(
+			"opencodeSidebar.errorTitle",
+			"OpenCode unavailable",
+		);
+		errorTitle.style.margin = "0 0 8px";
+		errorTitle.style.fontSize = "15px";
+		errorView.appendChild(errorTitle);
+
+		const errorText = document.createElement("p");
+		errorText.textContent = nls.localize(
+			"opencodeSidebar.errorText",
+			"Start the local server, then try again.",
+		);
+		errorText.style.margin = "0 0 16px";
+		errorText.style.fontSize = "13px";
+		errorText.style.lineHeight = "1.5";
+		errorText.style.color = "var(--vscode-descriptionForeground, var(--vscode-foreground))";
+		errorView.appendChild(errorText);
+
+		const retryButton = this.createActionButton(
+			nls.localize("opencodeSidebar.retry", "Retry"),
+			() => this.retryLoad(),
+		);
+		errorView.appendChild(retryButton);
+		box.appendChild(errorView);
+
+		const noProjectView = document.createElement("div");
+		noProjectView.style.display = "none";
+
+		const noProjectTitle = document.createElement("h2");
+		noProjectTitle.textContent = nls.localize(
+			"opencodeSidebar.noProjectTitle",
+			"Open a folder to use OpenCode",
+		);
+		noProjectTitle.style.margin = "0 0 8px";
+		noProjectTitle.style.fontSize = "15px";
+		noProjectView.appendChild(noProjectTitle);
+
+		const noProjectText = document.createElement("p");
+		noProjectText.textContent = nls.localize(
+			"opencodeSidebar.noProjectText",
+			"This view needs an open workspace folder before the proxy can start.",
+		);
+		noProjectText.style.margin = "0 0 16px";
+		noProjectText.style.fontSize = "13px";
+		noProjectText.style.lineHeight = "1.5";
+		noProjectText.style.color = "var(--vscode-descriptionForeground, var(--vscode-foreground))";
+		noProjectView.appendChild(noProjectText);
+
+		const openFolderButton = this.createActionButton(
+			nls.localize("opencodeSidebar.openFolder", "Open Folder"),
+			() => {
+				void this.executeCommand("vscode.openFolder").then(undefined, (error) => {
+					this.logError("[OpenCode] Failed to open folder picker", error);
+				});
+			},
+		);
+		noProjectView.appendChild(openFolderButton);
+		box.appendChild(noProjectView);
 
 		const iframe = document.createElement("iframe");
+		iframe.title = "OpenCode";
 		iframe.style.width = "100%";
 		iframe.style.height = "100%";
 		iframe.style.border = "0";
-		iframe.style.display = "block";
+		iframe.style.display = "none";
 		iframe.style.background = "transparent";
-		iframe.setAttribute(
-			"sandbox",
-			"allow-downloads allow-forms allow-popups allow-same-origin allow-scripts",
-		);
-		iframe.srcdoc = this.html;
+		iframe.allow = "clipboard-read; clipboard-write; autoplay";
 
-		container.appendChild(iframe);
+		root.appendChild(iframe);
+		root.appendChild(shell);
+		container.appendChild(root);
+
+		this.bodyRoot = root;
+		this.shell = shell;
+		this.loadingView = loadingView;
+		this.errorView = errorView;
+		this.noProjectView = noProjectView;
 		this.iframe = iframe;
 		this.messageBridge.setIframe(iframe);
+		this._register(this.contextService.onDidChangeWorkbenchState(() => this.updateWorkspace()));
+		this._register(this.contextService.onDidChangeWorkspaceFolders(() => this.updateWorkspace()));
 		this._register(
 			toDisposable(() => {
+				this.clearLoadingTimer();
+				this.loadRequest += 1;
+				this.bodyRoot = undefined;
+				this.shell = undefined;
+				this.loadingView = undefined;
+				this.errorView = undefined;
+				this.noProjectView = undefined;
 				this.iframe = undefined;
 				this.messageBridge.setIframe(undefined);
+				animationStyle.remove();
+				root.remove();
 				iframe.remove();
 			}),
 		);
+
+		this.renderState();
+		this.updateWorkspace();
 	}
 
 	protected override layoutBody(height: number, width: number): void {
 		super.layoutBody(height, width);
 
-		if (!this.iframe) {
+		if (!this.bodyRoot) {
 			return;
 		}
 
-		this.iframe.style.height = `${height}px`;
-		this.iframe.style.width = `${width}px`;
+		this.bodyRoot.style.height = `${height}px`;
+		this.bodyRoot.style.width = `${width}px`;
 	}
 
 	private async handleMessage(message: IOpencodeMessage): Promise<void> {
 		switch (message.type) {
-			case 'ready': {
+			case "opencode-web.frame-ready": {
+				if (this.state !== "loading") {
+					return;
+				}
+
+				const url = (message as IOpencodeMessage & { url?: unknown }).url;
+				if (
+					typeof url === "string" &&
+					this.iframeUrl &&
+					url !== this.iframeUrl
+				) {
+					return;
+				}
+
+				this.setState("ready");
+				return;
+			}
+
+			case "ready": {
 				this.messageBridge.send({
-					type: 'config',
+					type: "config",
 					payload: {
 						theme: this.themeService.getColorTheme().type,
 						serverUrl: this.opencodeEditorService.getServerUrl(),
@@ -146,120 +324,253 @@ export class OpencodeSidebarPane extends ViewPane {
 				return;
 			}
 
-			case 'apply-diff-edit': {
+			case "apply-diff-edit": {
 				const { editorId, edits } = message.payload as { editorId: string; edits: DiffEdit[] };
 				const zoneId = this.editCodeService.createDiffZone(editorId, edits);
 				this.messageBridge.send({
-					type: 'diff-zone-created',
+					type: "diff-zone-created",
 					id: message.id,
 					payload: { zoneId },
 				});
 				return;
 			}
 
-			case 'llm-request': {
+			case "llm-request": {
 				const { prompt } = message.payload as { prompt: string };
 				const response = await this.opencodeEditorService.sendLLMRequest(prompt);
 				this.messageBridge.send({
-					type: 'llm-response',
+					type: "llm-response",
 					id: message.id,
 					payload: { response },
+				});
+				return;
+			}
+
+			case "opencode-web.clipboard-write":
+			case "opencode.clipboard.write": {
+				const text = (message as IOpencodeMessage & { text?: unknown }).text;
+				if (typeof text !== "string") {
+					return;
+				}
+
+				await this.writeClipboardText(text).then(undefined, (error) => {
+					this.logError("[OpenCode] Failed to write clipboard text", error);
+				});
+				return;
+			}
+
+			case "opencode-web.clipboard-read": {
+				await this.readClipboardText().then(
+					(text) => {
+						this.messageBridge.send({
+							type: "opencode-web.clipboard-text",
+							text,
+						} as IOpencodeMessage & { text: string });
+					},
+					(error) => {
+						this.logError("[OpenCode] Failed to read clipboard text", error);
+					},
+				);
+				return;
+			}
+
+			case "opencode.vscode.command": {
+				const command = (message as IOpencodeMessage & { command?: unknown }).command;
+				if (typeof command !== "string") {
+					return;
+				}
+
+				if (!allowedCommands.has(command)) {
+					this.logWarning(`[OpenCode] Rejected command from iframe: ${command}`);
+					return;
+				}
+
+				await this.executeCommand(command).then(undefined, (error) => {
+					this.logError(`[OpenCode] Failed to execute command: ${command}`, error);
 				});
 				return;
 			}
 		}
 	}
 
-	private buildSpaHtml(): string {
-		const baseHref = `${FileAccess.asBrowserUri(opencodeMediaPath).toString(true)}/`;
-		const cssHref = FileAccess.asBrowserUri(
-			`${opencodeMediaPath}/opencode-spa.css`,
-		).toString(true);
-		const scriptHref = FileAccess.asBrowserUri(
-			`${opencodeMediaPath}/opencode-spa.js`,
-		).toString(true);
-		const serverUrl = this.opencodeEditorService.getServerUrl();
+	private createActionButton(label: string, run: () => void): HTMLButtonElement {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.textContent = label;
+		button.onclick = run;
+		button.style.border = "0";
+		button.style.borderRadius = "999px";
+		button.style.padding = "10px 16px";
+		button.style.background = "var(--vscode-button-background)";
+		button.style.color = "var(--vscode-button-foreground)";
+		button.style.font = "inherit";
+		button.style.cursor = "pointer";
+		return button;
+	}
 
-		return /* html */ `<!DOCTYPE html>
-<html lang="en">
-<head>
-	<meta charset="utf-8" />
-	<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
-	<base href="${escapeAttribute(baseHref)}" />
-	<link rel="stylesheet" href="${escapeAttribute(cssHref)}" />
-	<style>
-		html, body {
-			margin: 0;
-			width: 100%;
-			height: 100%;
-			background: var(--background-base, #1f1f1f);
+	private setState(state: SidebarState, options?: { armTimeout?: boolean }): void {
+		this.state = state;
+
+		if (state === "loading" && options?.armTimeout !== false) {
+			this.armLoadingTimer();
 		}
 
-		body {
-			position: relative;
-			overflow: hidden;
+		if (state !== "loading" || options?.armTimeout === false) {
+			this.clearLoadingTimer();
 		}
 
-		#root {
-			height: 100%;
+		this.renderState();
+	}
+
+	private renderState(): void {
+		if (!this.shell || !this.loadingView || !this.errorView || !this.noProjectView) {
+			return;
 		}
 
-		#opencode-fallback {
-			position: absolute;
-			inset: 0;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			font-family: var(--font-family-sans, sans-serif);
-			font-size: 14px;
-			color: var(--vscode-foreground, #cccccc);
-			background: linear-gradient(180deg, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.06));
-			pointer-events: none;
+		this.shell.style.display = this.state === "ready" ? "none" : "flex";
+		this.loadingView.style.display = this.state === "loading" ? "block" : "none";
+		this.errorView.style.display = this.state === "error" ? "block" : "none";
+		this.noProjectView.style.display = this.state === "no-project" ? "block" : "none";
+
+		if (!this.iframe) {
+			return;
 		}
-	</style>
-</head>
-<body class="antialiased overscroll-none text-12-regular overflow-hidden">
-	<div id="root" class="flex flex-col h-dvh p-px"></div>
-	<div id="opencode-fallback">OpenCode Chat</div>
-	<script>
-		(() => {
-			const themeIdKey = "opencode-theme-id";
-			const serverUrlKey = "opencode.settings.dat:defaultServerUrl";
-			let themeId = "oc-2";
-			let scheme = "system";
 
-			try {
-				themeId = localStorage.getItem(themeIdKey) || themeId;
-				scheme = localStorage.getItem("opencode-color-scheme") || scheme;
-				if (!localStorage.getItem(serverUrlKey)) {
-					localStorage.setItem(serverUrlKey, ${JSON.stringify(serverUrl)});
-				}
-			} catch {
-				// Ignore storage failures in sandboxed environments.
-			}
+		this.iframe.style.display = this.state === "ready" ? "block" : "none";
+	}
 
-			const isDark = scheme === "dark" || (scheme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
-			document.documentElement.dataset.theme = themeId === "oc-1" ? "oc-2" : themeId;
-			document.documentElement.dataset.colorScheme = isDark ? "dark" : "light";
-
-			const root = document.getElementById("root");
-			const fallback = document.getElementById("opencode-fallback");
-			if (!(root instanceof HTMLElement) || !(fallback instanceof HTMLElement)) {
+	private armLoadingTimer(): void {
+		this.clearLoadingTimer();
+		this.loadingTimer = setTimeout(() => {
+			if (this.state !== "loading") {
 				return;
 			}
 
-			const syncFallback = () => {
-				fallback.hidden = root.childElementCount > 0;
-			};
+			this.setState("error");
+		}, loadingTimeout);
+	}
 
-			new MutationObserver(syncFallback).observe(root, { childList: true, subtree: true });
-			window.addEventListener("load", syncFallback, { once: true });
-			setTimeout(syncFallback, 2000);
-		})();
-	</script>
-	<script type="module" src="${escapeAttribute(scriptHref)}"></script>
-</body>
-</html>`;
+	private clearLoadingTimer(): void {
+		if (!this.loadingTimer) {
+			return;
+		}
+
+		clearTimeout(this.loadingTimer);
+		this.loadingTimer = undefined;
+	}
+
+	private updateWorkspace(): void {
+		const workspaceDir = this.contextService.getWorkspace().folders[0]?.uri.fsPath ?? "";
+		this.workspaceDir = workspaceDir;
+
+		if (!workspaceDir) {
+			this.loadRequest += 1;
+			this.iframeUrl = undefined;
+			this.setState("no-project");
+			return;
+		}
+
+		this.loadWorkspace(workspaceDir);
+	}
+
+	private loadWorkspace(workspaceDir: string): void {
+		const request = ++this.loadRequest;
+		this.workspaceDir = workspaceDir;
+		this.iframeUrl = undefined;
+		this.setState("loading", { armTimeout: false });
+
+		void this.startProxy(workspaceDir).then(
+			(url) => {
+				if (request !== this.loadRequest || !this.iframe) {
+					return;
+				}
+
+				this.iframeUrl = url;
+				this.navigateIframe(url, request);
+			},
+			(error) => {
+				if (request !== this.loadRequest) {
+					return;
+				}
+
+				this.logError("[OpenCode] Failed to start proxy", error);
+				this.setState("error");
+			},
+		);
+	}
+
+	private navigateIframe(url: string, request: number): void {
+		if (!this.iframe) {
+			return;
+		}
+
+		const iframe = this.iframe;
+		const navigate = () => {
+			if (request !== this.loadRequest || this.iframe !== iframe) {
+				return;
+			}
+
+			iframe.src = url;
+			this.setState("loading");
+		};
+
+		if (iframe.src === url) {
+			iframe.src = "about:blank";
+			setTimeout(navigate, 0);
+			return;
+		}
+
+		navigate();
+	}
+
+	private retryLoad(): void {
+		if (!this.workspaceDir) {
+			this.setState("no-project");
+			return;
+		}
+
+		this.loadWorkspace(this.workspaceDir);
+	}
+
+	private async startProxy(workspaceDir: string): Promise<string> {
+		await this.spaProxyService.start({
+			dist: FileAccess.asFileUri(opencodeSpaPath).fsPath,
+		});
+
+		return this.spaProxyService.url(workspaceDir);
+	}
+
+	private executeCommand(command: string): Promise<void> {
+		return this.instantiationService.invokeFunction((accessor) =>
+			accessor
+				.get(ICommandService)
+				.executeCommand(command)
+				.then(() => undefined),
+		);
+	}
+
+	private readClipboardText(): Promise<string> {
+		return this.instantiationService.invokeFunction((accessor) =>
+			accessor.get(IClipboardService).readText(),
+		);
+	}
+
+	private writeClipboardText(text: string): Promise<void> {
+		return this.instantiationService.invokeFunction((accessor) =>
+			accessor.get(IClipboardService).writeText(text),
+		);
+	}
+
+	private logError(message: string, error: unknown): void {
+		this.instantiationService.invokeFunction((accessor) => {
+			accessor.get(ILogService).error(message, error);
+		});
+	}
+
+	private logWarning(message: string): void {
+		this.instantiationService.invokeFunction((accessor) => {
+			accessor.get(ILogService).warn(message);
+		});
 	}
 }
 
@@ -274,6 +585,8 @@ IThemeService(OpencodeSidebarPane, "", 8);
 IHoverService(OpencodeSidebarPane, "", 9);
 IOpencodeEditorService(OpencodeSidebarPane, "", 10);
 IEditCodeService(OpencodeSidebarPane, "", 11);
+IWorkspaceContextService(OpencodeSidebarPane, "", 12);
+ISpaProxyService(OpencodeSidebarPane, "", 13);
 
 const opencodeViewContainer = Registry.as<IViewContainersRegistry>(
 	ViewExtensions.ViewContainersRegistry,

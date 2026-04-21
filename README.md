@@ -48,6 +48,43 @@ please see the document [How to Contribute](https://github.com/microsoft/vscode/
 
 See our [wiki](https://github.com/microsoft/vscode/wiki/Feedback-Channels) for a description of each of these channels and information on some other available community-driven channels.
 
+## OpenCode Architecture
+
+OpenCode's chat UI runs as a vendored SPA (`packages/app` from the main opencode repo)
+loaded into the workbench via a loopback HTTP proxy.
+
+### Process Model
+
+- **Main process** (electron-main, `src/vs/code/electron-main/app.ts`):
+  - `ISpaProxyService` — HTTP server that serves vendored SPA + proxies API calls to backend
+  - `IOpencodeServeManager` — Manages `opencode serve` child process lifecycle
+  - `ISpaProxyService` exposed to renderer via IPC channel `opencodeSpaProxy`
+
+- **Renderer process** (electron-browser):
+  - `registerMainProcessRemoteService(ISpaProxyService, 'opencodeSpaProxy')` creates the IPC proxy
+  - `sidebarPane.ts` computes iframe URL: `http://127.0.0.1:<stable_port>/<base64_workspace>`
+
+### Rebuilding the SPA
+
+    # 1. Build SPA in the main opencode repo
+    cd ../packages/app
+    bun run build
+
+    # 2. Copy to fork's vendored directory
+    cp -r dist/ <fork>/src/vs/workbench/contrib/opencode/media/spa/
+
+    # 3. Rebuild the fork
+    cd <fork>
+    npm run compile
+
+### Configuration
+
+User settings:
+
+- `opencode.autoStart` (boolean, default `true`): Auto-start `opencode serve`
+- `opencode.port` (number, default `4096`): Backend port
+- `opencode.binaryPath` (string, default ``): Override opencode binary path
+
 ## Related Projects
 
 Many of the core components and extensions to VS Code live in their own repositories on GitHub. For example, the [node debug adapter](https://github.com/microsoft/vscode-node-debug) and the [mono debug adapter](https://github.com/microsoft/vscode-mono-debug) repositories are separate from each other. For a complete list, please visit the [Related Projects](https://github.com/microsoft/vscode/wiki/Related-Projects) page on our [wiki](https://github.com/microsoft/vscode/wiki).

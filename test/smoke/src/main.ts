@@ -23,6 +23,7 @@ import { setup as setupStatusbarTests } from './areas/statusbar/statusbar.test';
 import { setup as setupExtensionTests } from './areas/extensions/extensions.test';
 import { setup as setupExtensionHostRestartTests } from './areas/extensions/extension-host-restart.test';
 import { setup as setupMultirootTests } from './areas/multiroot/multiroot.test';
+import { setup as setupOpencodeTests } from './areas/opencode/opencode.test';
 import { setup as setupLocalizationTests } from './areas/workbench/localization.test';
 import { setup as setupLaunchTests } from './areas/workbench/launch.test';
 import { setup as setupTerminalTests } from './areas/terminal/terminal.test';
@@ -359,6 +360,13 @@ async function setup(): Promise<void> {
 			fs.rmSync(dest, { recursive: true, force: true });
 		}
 		fs.cpSync(smokeExtPath, dest, { recursive: true });
+
+		const opencodeSampleExtPath = path.join(rootPath, 'samples', 'opencode-sample-ext');
+		const opencodeSampleDest = path.join(extensionsPath, 'opencode-sample-ext');
+		if (fs.existsSync(opencodeSampleDest)) {
+			fs.rmSync(opencodeSampleDest, { recursive: true, force: true });
+		}
+		fs.cpSync(opencodeSampleExtPath, opencodeSampleDest, { recursive: true });
 	}
 
 	logger.log('Smoketest setup done!\n');
@@ -385,7 +393,10 @@ before(async function () {
 		tracing: opts.tracing || !!process.env.BUILD_ARTIFACTSTAGINGDIRECTORY || !!process.env.GITHUB_WORKSPACE,
 		headless: opts.headless,
 		browser: opts.browser,
-		extraArgs: (opts.electronArgs || '').split(' ').map(arg => arg.trim()).filter(arg => !!arg)
+		extraArgs: [
+			...(opts.electronArgs || '').split(' ').map(arg => arg.trim()).filter(arg => !!arg),
+			...(!opts.web && !opts.remote ? ['--enable-proposed-api=opencode.opencode-sample-ext'] : []),
+		]
 	};
 	this.defaultOptions = options;
 
@@ -418,5 +429,6 @@ describe(`VSCode Smoke Tests (${opts.web ? 'Web' : 'Electron'})`, () => {
 	if (!opts.web && !opts.remote && quality !== Quality.Dev && quality !== Quality.OSS) { setupLocalizationTests(logger); }
 	if (!opts.web && !opts.remote) { setupLaunchTests(logger); }
 	if (!opts.web) { setupChatTests(logger); }
+	if (!opts.web && !opts.remote) { setupOpencodeTests(logger); }
 	setupAccessibilityTests(logger, opts, quality);
 });
