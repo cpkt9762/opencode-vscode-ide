@@ -2,6 +2,7 @@
  *  Copyright (c) pingzi. Licensed under the Apache License, Version 2.0.
  *--------------------------------------------------------------------------------------------*/
 
+import { createTrustedTypesPolicy } from "../../../../base/browser/trustedTypes.js";
 import { Orientation } from "../../../../base/browser/ui/sash/sash.js";
 import { toDisposable } from "../../../../base/common/lifecycle.js";
 import { FileAccess } from "../../../../base/common/network.js";
@@ -49,6 +50,10 @@ const escapeAttribute = (value: string) =>
 		.replaceAll("&", "&amp;")
 		.replaceAll('"', "&quot;")
 		.replaceAll("<", "&lt;");
+
+const ttPolicy = createTrustedTypesPolicy("opencodeSidebar", {
+	createHTML: value => value,
+});
 
 export class OpencodeSidebarPane extends ViewPane {
 	private readonly html: string;
@@ -108,7 +113,7 @@ export class OpencodeSidebarPane extends ViewPane {
 			"sandbox",
 			"allow-downloads allow-forms allow-popups allow-same-origin allow-scripts",
 		);
-		iframe.srcdoc = this.html;
+		iframe.srcdoc = (ttPolicy?.createHTML(this.html) as unknown as string | undefined) ?? this.html;
 
 		container.appendChild(iframe);
 		this.iframe = iframe;
