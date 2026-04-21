@@ -52,7 +52,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	properties: {
 		'opencode.autoStart': {
 			type: 'boolean',
-			default: true,
+			default: false,
 			description: localize('opencodeAutoStart', 'Automatically start opencode serve when the workbench opens.'),
 		},
 		'opencode.port': {

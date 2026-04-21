@@ -34,7 +34,6 @@ import {
 } from "../../../common/views.js";
 import type { DiffEdit } from "../common/editCodeServiceTypes.js";
 import { IOpencodeEditorService } from "../common/opencodeEditorService.js";
-import { IOpencodeServeManager } from "../electron-main/opencodeServeManager.js";
 import { ISpaProxyService } from "../electron-main/spaProxyService.js";
 import { IEditCodeService } from "./editCodeService.js";
 import { type IOpencodeMessage, MessageBridge } from "./messageBridge.js";
@@ -86,7 +85,6 @@ export class OpencodeSidebarPane extends ViewPane {
 		private readonly editCodeService: IEditCodeService,
 		private readonly contextService: IWorkspaceContextService,
 		private readonly spaProxyService: ISpaProxyService,
-		private readonly opencodeServeManager: IOpencodeServeManager,
 	) {
 		super(
 			options,
@@ -535,13 +533,8 @@ export class OpencodeSidebarPane extends ViewPane {
 	}
 
 	private async startProxy(workspaceDir: string): Promise<string> {
-		const backend =
-			this.opencodeServeManager.backendUrl ??
-			(await this.opencodeServeManager.start());
-
 		await this.spaProxyService.start({
 			dist: FileAccess.asFileUri(opencodeSpaPath).fsPath,
-			backend,
 		});
 
 		return this.spaProxyService.url(workspaceDir);
@@ -594,7 +587,6 @@ IOpencodeEditorService(OpencodeSidebarPane, "", 10);
 IEditCodeService(OpencodeSidebarPane, "", 11);
 IWorkspaceContextService(OpencodeSidebarPane, "", 12);
 ISpaProxyService(OpencodeSidebarPane, "", 13);
-IOpencodeServeManager(OpencodeSidebarPane, "", 14);
 
 const opencodeViewContainer = Registry.as<IViewContainersRegistry>(
 	ViewExtensions.ViewContainersRegistry,

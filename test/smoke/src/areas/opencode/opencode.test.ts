@@ -26,6 +26,15 @@ const opencodeInstallHint = 'Install it with `npm i -g opencode-ai` or configure
 
 let opencodeServeProcess: ReturnType<typeof spawn> | undefined;
 
+async function isOpencodeServeHealthy(): Promise<boolean> {
+	try {
+		const response = await fetch(opencodeServeHealthUrl);
+		return response.ok || response.status === 401;
+	} catch {
+		return false;
+	}
+}
+
 async function openAppJs(app: Application): Promise<void> {
 	await app.workbench.quickaccess.openFile(join(app.workspacePathOrFolder, 'app.js'));
 }
@@ -145,11 +154,12 @@ async function waitForOpencodeServe(getOutput: () => string): Promise<void> {
 			resolve();
 		};
 		const onError = (error: Error) => finish(withOutput(`Failed to start opencode serve: ${error.message}. ${opencodeInstallHint}`));
-		const onExit = (code: number | null, signal: NodeJS.Signals | null) => finish(withOutput(`opencode serve exited before ready (code=${code ?? 'unknown'} signal=${signal ?? 'unknown'})`));
+		const onExit = () => {
+			void check();
+		};
 		const check = async (): Promise<void> => {
 			try {
-				const response = await fetch(opencodeServeHealthUrl);
-				if (response.ok) {
+				if (await isOpencodeServeHealthy()) {
 					finish();
 					return;
 				}
@@ -182,6 +192,10 @@ export function setup(logger: Logger) {
 		before(async function () {
 			this.timeout(30000);
 			opencodeServeOutput = '';
+			if (await isOpencodeServeHealthy()) {
+				return;
+			}
+
 			opencodeServeProcess = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', '4096', '--print-logs'], {
 				stdio: ['ignore', 'pipe', 'pipe'],
 			});

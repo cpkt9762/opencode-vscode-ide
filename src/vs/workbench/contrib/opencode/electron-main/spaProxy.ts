@@ -3,11 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { readFile } from 'fs/promises';
-import { createServer, request as req, type IncomingMessage, type OutgoingHttpHeaders, type Server, type ServerResponse } from 'http';
-import { extname, join } from 'path';
+import { readFile } from 'node:fs/promises';
+import { createServer, request as req, type IncomingMessage, type OutgoingHttpHeaders, type Server, type ServerResponse } from 'node:http';
+import { extname, join } from 'node:path';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IOpencodeServeManager } from './opencodeServeManager.js';
 import { ISpaProxyService } from './spaProxyService.js';
 
 const BACKEND_UNAVAILABLE = 'backend unavailable';
@@ -701,19 +702,24 @@ export class SpaProxyService implements ISpaProxyService {
 	private port = 0;
 	private server: Server | undefined;
 
-	constructor(private readonly logService: ILogService) {}
+	constructor(
+		private readonly logService: ILogService,
+		private readonly opencodeServeManager: IOpencodeServeManager,
+	) {}
 
-	async start(options: { dist: string; backend: string }) {
-		if (this.server && this.backend === options.backend && this.dist === options.dist && this.port) {
+	async start(options: { dist: string; backend?: string }) {
+		const backend = options.backend ?? this.opencodeServeManager.backendUrl ?? await this.opencodeServeManager.start();
+
+		if (this.server && this.backend === backend && this.dist === options.dist && this.port) {
 			return { port: this.port };
 		}
 
 		await this.stop();
-		this.backend = options.backend;
+		this.backend = backend;
 		this.dist = options.dist;
 
 		const result = await start({
-			backend: options.backend,
+			backend,
 			dist: options.dist,
 			log: message => {
 				if (message.includes('[SpaProxy] FATAL')) {
@@ -741,7 +747,7 @@ export class SpaProxyService implements ISpaProxyService {
 		await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 	}
 
-	url(workspaceDir: string) {
+	async url(workspaceDir: string) {
 		return `http://127.0.0.1:${this.port || stablePort(this.backend || 'http://127.0.0.1:4096')}/${encodeWorkspaceDir(workspaceDir)}`;
 	}
 
@@ -751,5 +757,6 @@ export class SpaProxyService implements ISpaProxyService {
 }
 
 ILogService(SpaProxyService, '', 0);
+IOpencodeServeManager(SpaProxyService, '', 1);
 
 registerSingleton(ISpaProxyService, SpaProxyService, InstantiationType.Eager);

@@ -144,6 +144,9 @@ import { IWebContentExtractorService } from '../../platform/webContentExtractor/
 import { NativeWebContentExtractorService } from '../../platform/webContentExtractor/electron-main/webContentExtractorService.js';
 import { AgentNetworkFilterService, IAgentNetworkFilterService } from '../../platform/networkFilter/common/networkFilterService.js';
 import ErrorTelemetry from '../../platform/telemetry/electron-main/errorTelemetry.js';
+import { IOpencodeServeManager, OpencodeServeManager } from '../../workbench/contrib/opencode/electron-main/opencodeServeManager.js';
+import { ISpaProxyService } from '../../workbench/contrib/opencode/electron-main/spaProxyService.js';
+import { SpaProxyService } from '../../workbench/contrib/opencode/electron-main/spaProxy.js';
 
 /**
  * The main VS Code application. There will only ever be one instance,
@@ -1198,6 +1201,10 @@ export class CodeApplication extends Disposable {
 		// Dev Only: CSS service (for ESM)
 		services.set(ICSSDevelopmentService, new SyncDescriptor(CSSDevelopmentService, undefined, true));
 
+		// OpenCode
+		services.set(IOpencodeServeManager, new SyncDescriptor(OpencodeServeManager, undefined, true));
+		services.set(ISpaProxyService, new SyncDescriptor(SpaProxyService, undefined, true));
+
 		// Init services that require it
 		await Promises.settled([
 			backupMainService.initialize(),
@@ -1348,6 +1355,10 @@ export class CodeApplication extends Disposable {
 		const loggerChannel = new LoggerChannel(accessor.get(ILoggerMainService),);
 		mainProcessElectronServer.registerChannel('logger', loggerChannel);
 		sharedProcessClient.then(client => client.registerChannel('logger', loggerChannel));
+
+		// OpenCode
+		const spaProxyChannel = ProxyChannel.fromService(accessor.get(ISpaProxyService), disposables);
+		mainProcessElectronServer.registerChannel('opencodeSpaProxy', spaProxyChannel);
 
 		// Extension Host Debug Broadcasting
 		const electronExtensionHostDebugBroadcastChannel = new ElectronExtensionHostDebugBroadcastChannel(accessor.get(IWindowsMainService));

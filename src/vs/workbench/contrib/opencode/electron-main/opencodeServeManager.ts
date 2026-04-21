@@ -486,10 +486,7 @@ export class OpencodeServeManager
 	}
 
 	private getAutoStart(): boolean {
-		return (
-			this.configurationService.getValue<boolean>("opencode.autoStart") !==
-			false
-		);
+		return this.configurationService.getValue<boolean>("opencode.autoStart") === true;
 	}
 
 	private getPort(): number {

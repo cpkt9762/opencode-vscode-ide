@@ -10,7 +10,7 @@ export const ISpaProxyService = createDecorator<ISpaProxyService>('spaProxyServi
 
 export interface ISpaProxyService extends IDisposable {
 	readonly _serviceBrand: undefined;
-	start(opts: { dist: string; backend: string }): Promise<{ port: number }>;
+	start(opts: { dist: string; backend?: string }): Promise<{ port: number }>;
 	stop(): Promise<void>;
-	url(workspaceDir: string): string;
+	url(workspaceDir: string): Promise<string>;
 }
