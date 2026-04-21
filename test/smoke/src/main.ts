@@ -3,32 +3,33 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as fs from 'fs';
-import { gracefulify } from 'graceful-fs';
-import * as cp from 'child_process';
-import * as path from 'path';
-import * as os from 'os';
-import minimist from 'minimist';
 import * as vscodetest from '@vscode/test-electron';
+import * as cp from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { gracefulify } from 'graceful-fs';
+import minimist = require('minimist');
 import fetch from 'node-fetch';
-import { Quality, MultiLogger, Logger, ConsoleLogger, FileLogger, measureAndLog, getDevElectronPath, getBuildElectronPath, getBuildVersion, ApplicationOptions } from '../../automation';
-import { retry } from './utils';
-
-import { setup as setupDataLossTests } from './areas/workbench/data-loss.test';
+import { ConsoleLogger, FileLogger, getBuildElectronPath, getBuildVersion, getDevElectronPath, measureAndLog, MultiLogger, Quality } from '../../automation';
+import type { ApplicationOptions, Logger } from '../../automation';
+import { setup as setupAccessibilityTests } from './areas/accessibility/accessibility.test';
+import { setup as setupChatTests } from './areas/chat/chatDisabled.test';
+import { setup as setupExtensionHostRestartTests } from './areas/extensions/extension-host-restart.test';
+import { setup as setupExtensionTests } from './areas/extensions/extensions.test';
+import { setup as setupLanguagesTests } from './areas/languages/languages.test';
+import { setup as setupMultirootTests } from './areas/multiroot/multiroot.test';
+import { setup as setupNotebookTests } from './areas/notebook/notebook.test';
+import { setup as setupOpencodeTests } from './areas/opencode/opencode.test';
 import { setup as setupPreferencesTests } from './areas/preferences/preferences.test';
 import { setup as setupSearchTests } from './areas/search/search.test';
-import { setup as setupNotebookTests } from './areas/notebook/notebook.test';
-import { setup as setupLanguagesTests } from './areas/languages/languages.test';
 import { setup as setupStatusbarTests } from './areas/statusbar/statusbar.test';
-import { setup as setupExtensionTests } from './areas/extensions/extensions.test';
-import { setup as setupExtensionHostRestartTests } from './areas/extensions/extension-host-restart.test';
-import { setup as setupMultirootTests } from './areas/multiroot/multiroot.test';
-import { setup as setupLocalizationTests } from './areas/workbench/localization.test';
-import { setup as setupLaunchTests } from './areas/workbench/launch.test';
-import { setup as setupTerminalTests } from './areas/terminal/terminal.test';
 import { setup as setupTaskTests } from './areas/task/task.test';
-import { setup as setupChatTests } from './areas/chat/chatDisabled.test';
-import { setup as setupAccessibilityTests } from './areas/accessibility/accessibility.test';
+import { setup as setupTerminalTests } from './areas/terminal/terminal.test';
+import { setup as setupDataLossTests } from './areas/workbench/data-loss.test';
+import { setup as setupLaunchTests } from './areas/workbench/launch.test';
+import { setup as setupLocalizationTests } from './areas/workbench/localization.test';
+import { retry } from './utils';
 
 const rootPath = path.join(__dirname, '..', '..', '..');
 
@@ -160,8 +161,13 @@ let quality: Quality;
 let version: string | undefined;
 
 function parseVersion(version: string): { major: number; minor: number; patch: number } {
-	const [, major, minor, patch] = /^(\d+)\.(\d+)\.(\d+)/.exec(version)!;
-	return { major: parseInt(major), minor: parseInt(minor), patch: parseInt(patch) };
+	const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+	if (!match) {
+		throw new Error(`Invalid version string: ${version}`);
+	}
+
+	const [, major, minor, patch] = match;
+	return { major: parseInt(major, 10), minor: parseInt(minor, 10), patch: parseInt(patch, 10) };
 }
 
 function parseQuality(): Quality {
@@ -274,7 +280,11 @@ async function setupRepository(): Promise<void> {
 async function ensureStableCode(): Promise<void> {
 	let stableCodePath = opts['stable-build'];
 	if (!stableCodePath) {
-		const current = parseVersion(version!);
+		if (!version) {
+			throw new Error('Expected dev or build version before downloading stable code');
+		}
+
+		const current = parseVersion(version);
 		const versionsReq = await retry(() => measureAndLog(() => fetch('https://update.code.visualstudio.com/api/releases/stable'), 'versionReq', logger), 1000, 20);
 
 		if (!versionsReq.ok) {
@@ -293,7 +303,7 @@ async function ensureStableCode(): Promise<void> {
 
 		logger.log(`Found VS Code v${version}, downloading previous VS Code version ${stableVersion}...`);
 
-		let lastProgressMessage: string | undefined = undefined;
+		let lastProgressMessage: string | undefined;
 		let lastProgressReportedAt = 0;
 		const stableCodeDestination = path.join(testDataPath, 's');
 		const stableCodeExecutable = await retry(() => measureAndLog(() => vscodetest.download({
@@ -359,6 +369,13 @@ async function setup(): Promise<void> {
 			fs.rmSync(dest, { recursive: true, force: true });
 		}
 		fs.cpSync(smokeExtPath, dest, { recursive: true });
+
+		const opencodeSampleExtPath = path.join(rootPath, 'samples', 'opencode-sample-ext');
+		const opencodeSampleDest = path.join(extensionsPath, 'opencode-sample-ext');
+		if (fs.existsSync(opencodeSampleDest)) {
+			fs.rmSync(opencodeSampleDest, { recursive: true, force: true });
+		}
+		fs.cpSync(opencodeSampleExtPath, opencodeSampleDest, { recursive: true });
 	}
 
 	logger.log('Smoketest setup done!\n');
@@ -385,7 +402,10 @@ before(async function () {
 		tracing: opts.tracing || !!process.env.BUILD_ARTIFACTSTAGINGDIRECTORY || !!process.env.GITHUB_WORKSPACE,
 		headless: opts.headless,
 		browser: opts.browser,
-		extraArgs: (opts.electronArgs || '').split(' ').map(arg => arg.trim()).filter(arg => !!arg)
+		extraArgs: [
+			...(opts.electronArgs || '').split(' ').map(arg => arg.trim()).filter(arg => !!arg),
+			...(!opts.web && !opts.remote ? ['--enable-proposed-api=opencode.opencode-sample-ext'] : []),
+		]
 	};
 	this.defaultOptions = options;
 
@@ -393,7 +413,7 @@ before(async function () {
 });
 
 // After main suite (after all tests)
-after(async function () {
+after(async () => {
 	try {
 		await measureAndLog(async () => {
 			fs.rmSync(testDataPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
@@ -418,5 +438,6 @@ describe(`VSCode Smoke Tests (${opts.web ? 'Web' : 'Electron'})`, () => {
 	if (!opts.web && !opts.remote && quality !== Quality.Dev && quality !== Quality.OSS) { setupLocalizationTests(logger); }
 	if (!opts.web && !opts.remote) { setupLaunchTests(logger); }
 	if (!opts.web) { setupChatTests(logger); }
+	if (!opts.web && !opts.remote) { setupOpencodeTests(logger); }
 	setupAccessibilityTests(logger, opts, quality);
 });
