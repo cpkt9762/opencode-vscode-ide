@@ -312,6 +312,13 @@ export const BOOTSTRAP = `<script>
   } catch(e) {}
   blog("lastProject=" + lps + " lastProjectSession=" + lpSession)
   function send(type, data) { try { window.parent.postMessage(Object.assign({type:type}, data), "*") } catch(e) {} }
+  if (document.readyState === "complete") {
+    send("opencode-web.frame-ready", { url: location.href })
+  } else {
+    window.addEventListener("load", function() {
+      send("opencode-web.frame-ready", { url: location.href })
+    }, { once: true })
+  }
   function insertAtCaret(text) {
     if (document.execCommand && document.execCommand("insertText", false, text)) return true
     var sel = window.getSelection()

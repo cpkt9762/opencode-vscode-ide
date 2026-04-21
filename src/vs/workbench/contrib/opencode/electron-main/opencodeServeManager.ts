@@ -13,6 +13,10 @@ import {
 	type IDisposable,
 } from "../../../../base/common/lifecycle.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
+import {
+	InstantiationType,
+	registerSingleton,
+} from "../../../../platform/instantiation/common/extensions.js";
 import { createDecorator } from "../../../../platform/instantiation/common/instantiation.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
 
@@ -577,3 +581,9 @@ function isHealthResponse(value: unknown): value is { healthy: true } {
 
 IConfigurationService(OpencodeServeManager, "", 0);
 ILogService(OpencodeServeManager, "", 1);
+
+registerSingleton(
+	IOpencodeServeManager,
+	OpencodeServeManager,
+	InstantiationType.Eager,
+);
