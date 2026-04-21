@@ -7,3 +7,6 @@
 - The vendored app bundle assumes a browser `location.origin`; inside the iframe it resolves the backend as `null/...` unless the bootstrap rewrites the effective server URL before the app initializes.
 - After rewriting the effective server URL to `http://127.0.0.1:4096`, the next hard blocker is iframe `connect-src` CSP: requests to `/global/event`, `/path`, `/project`, `/session`, etc. are all denied by `connect-src 'self' https: ws:`.
 - Once the iframe begins booting far enough to mount, it steals focus, which breaks later smoke steps that rely on Quick Input unless the iframe focus behavior is also tamed.
+- Allowing loopback URLs in `workbench.html` / `workbench-dev.html` removes the `connect-src 'self' https: ws:` CSP violation for `http://127.0.0.1:4096/...`; round 4 no longer reports CSP-denied loopback requests.
+- After the `connect-src` fix, the next blocker is transport-level availability: the iframe now reaches `http://127.0.0.1:4096`, but the smoke run shows `net::ERR_CONNECTION_REFUSED` for `/global/event`, `/project`, and `/path`.
+- Round 4 still ends at `0 passing, 8 failing`, so the CSP change was necessary but not sufficient; the next round needs to investigate why the sidebar iframe cannot talk to the local backend during smoketests and whether iframe focus should be handed back after load.
