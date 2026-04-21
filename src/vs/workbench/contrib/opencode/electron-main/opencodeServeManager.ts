@@ -347,18 +347,20 @@ export class OpencodeServeManager
 
 	private async isHealthy(url: string): Promise<boolean> {
 		try {
-			const body = await this.readHealth(url);
-			return isHealthResponse(body);
+			const response = await this.readHealth(url);
+			return response.statusCode === 401 || isHealthResponse(response.body);
 		} catch {
 			return false;
 		}
 	}
 
-	private readHealth(url: string): Promise<unknown> {
+	private readHealth(
+		url: string,
+	): Promise<{ statusCode: number; body?: unknown }> {
 		const endpoint = new URL("/global/health", url);
 		const request = endpoint.protocol === "https:" ? httpsRequest : httpRequest;
 
-		return new Promise<unknown>((resolve, reject) => {
+		return new Promise<{ statusCode: number; body?: unknown }>((resolve, reject) => {
 			const req = request(endpoint, { method: "GET" }, (response) => {
 				let body = "";
 
@@ -367,9 +369,17 @@ export class OpencodeServeManager
 					body += chunk;
 				});
 				response.on("end", () => {
+					const statusCode = response.statusCode ?? 0;
+
+					if (statusCode === 401) {
+						// opencode can require auth here before an API key is configured.
+						resolve({ statusCode });
+						return;
+					}
+
 					if (
-						(response.statusCode ?? 0) < 200 ||
-						(response.statusCode ?? 0) >= 300
+						statusCode < 200 ||
+						statusCode >= 300
 					) {
 						reject(
 							new Error(
@@ -380,7 +390,7 @@ export class OpencodeServeManager
 					}
 
 					try {
-						resolve(JSON.parse(body));
+						resolve({ statusCode, body: JSON.parse(body) });
 					} catch (error) {
 						reject(this.toError(error));
 					}
