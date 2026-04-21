@@ -5,6 +5,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable } from "../../../../base/common/lifecycle.js";
+import { localize } from '../../../../nls.js';
+import {
+	Extensions as ConfigurationExtensions,
+	type IConfigurationRegistry,
+} from '../../../../platform/configuration/common/configurationRegistry.js';
 import {
 	InstantiationType,
 	registerSingleton,
@@ -39,6 +44,31 @@ Registry.as<IWorkbenchContributionsRegistry>(
 	OpencodeWorkbenchContribution,
 	LifecyclePhase.Restored,
 );
+
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'opencode',
+	title: localize('opencodeConfigurationTitle', 'OpenCode'),
+	type: 'object',
+	properties: {
+		'opencode.autoStart': {
+			type: 'boolean',
+			default: true,
+			description: localize('opencodeAutoStart', 'Automatically start opencode serve when the workbench opens.'),
+		},
+		'opencode.port': {
+			type: 'number',
+			default: 4096,
+			minimum: 1,
+			maximum: 65535,
+			description: localize('opencodePort', 'Port for the opencode serve backend.'),
+		},
+		'opencode.binaryPath': {
+			type: 'string',
+			default: '',
+			description: localize('opencodeBinaryPath', 'Override path to the opencode binary. Leave empty for auto-discovery.'),
+		},
+	},
+});
 
 registerSingleton(
 	IOpencodeEditorService,
