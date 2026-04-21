@@ -180,16 +180,22 @@ export class OpencodeSidebarPane extends ViewPane {
 		const cssHref = FileAccess.asBrowserUri(
 			`${opencodeMediaPath}/opencode-spa.css`,
 		).toString(true);
+		const initScriptHref = FileAccess.asBrowserUri(
+			`${opencodeMediaPath}/opencode-spa-init.js`,
+		).toString(true);
 		const scriptHref = FileAccess.asBrowserUri(
 			`${opencodeMediaPath}/opencode-spa.js`,
 		).toString(true);
 		const serverUrl = this.opencodeEditorService.getServerUrl();
+		const themeType = this.themeService.getColorTheme().type;
 
 		return /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
 	<meta charset="utf-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
+	<meta name="opencode-server-url" content="${escapeAttribute(serverUrl)}" />
+	<meta name="opencode-theme-type" content="${escapeAttribute(themeType)}" />
 	<base href="${escapeAttribute(baseHref)}" />
 	<link rel="stylesheet" href="${escapeAttribute(cssHref)}" />
 	<style>
@@ -226,42 +232,7 @@ export class OpencodeSidebarPane extends ViewPane {
 <body class="antialiased overscroll-none text-12-regular overflow-hidden">
 	<div id="root" class="flex flex-col h-dvh p-px"></div>
 	<div id="opencode-fallback">OpenCode Chat</div>
-	<script>
-		(() => {
-			const themeIdKey = "opencode-theme-id";
-			const serverUrlKey = "opencode.settings.dat:defaultServerUrl";
-			let themeId = "oc-2";
-			let scheme = "system";
-
-			try {
-				themeId = localStorage.getItem(themeIdKey) || themeId;
-				scheme = localStorage.getItem("opencode-color-scheme") || scheme;
-				if (!localStorage.getItem(serverUrlKey)) {
-					localStorage.setItem(serverUrlKey, ${JSON.stringify(serverUrl)});
-				}
-			} catch {
-				// Ignore storage failures in sandboxed environments.
-			}
-
-			const isDark = scheme === "dark" || (scheme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
-			document.documentElement.dataset.theme = themeId === "oc-1" ? "oc-2" : themeId;
-			document.documentElement.dataset.colorScheme = isDark ? "dark" : "light";
-
-			const root = document.getElementById("root");
-			const fallback = document.getElementById("opencode-fallback");
-			if (!(root instanceof HTMLElement) || !(fallback instanceof HTMLElement)) {
-				return;
-			}
-
-			const syncFallback = () => {
-				fallback.hidden = root.childElementCount > 0;
-			};
-
-			new MutationObserver(syncFallback).observe(root, { childList: true, subtree: true });
-			window.addEventListener("load", syncFallback, { once: true });
-			setTimeout(syncFallback, 2000);
-		})();
-	</script>
+	<script src="${escapeAttribute(initScriptHref)}"></script>
 	<script type="module" src="${escapeAttribute(scriptHref)}"></script>
 </body>
 </html>`;
