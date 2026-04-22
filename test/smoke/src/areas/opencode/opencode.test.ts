@@ -65,20 +65,19 @@ async function waitForOpencodeIframe(app: Application): Promise<void> {
 		(async () => {
 			const deadline = Date.now() + 30000;
 			while (Date.now() < deadline) {
-				try {
-					const iframe = document.querySelector(${JSON.stringify(opencodeIframeSelector)});
-					const win = iframe?.contentWindow;
-					if (win?.document?.readyState === 'complete' && /^http:\\/\\/127\\.0\\.0\\.1:\\d+$/.test(win.location.origin)) {
-						return;
-					}
-				} catch {
-					// wait and retry until the real-origin iframe is ready
+				const iframe = document.querySelector(${JSON.stringify(opencodeIframeSelector)});
+				if (
+					iframe instanceof HTMLIFrameElement &&
+					iframe.src.startsWith('http://127.0.0.1:') &&
+					iframe.style.display === 'block'
+				) {
+					return;
 				}
 
 				await new Promise(resolve => setTimeout(resolve, 100));
 			}
 
-			throw new Error('OpenCode iframe did not finish loading from loopback origin');
+			throw new Error('OpenCode iframe did not report frame-ready within 30s');
 		})()
 	`);
 }
@@ -114,7 +113,7 @@ async function postFromOpencodeIframe<T>(app: Application, message: OpencodeMess
 				}, 10000);
 
 				window.addEventListener('message', onMessage);
-				win.eval(${JSON.stringify(`window.parent.postMessage(${JSON.stringify(message)}, '*');`)});
+				win.postMessage(${JSON.stringify(message)}, '*');
 			});
 		})()
 	`) as T;
@@ -361,21 +360,168 @@ export function setup(logger: Logger) {
 			await app.workbench.editor.waitForEditorContents('app.js', contents => contents.includes(modifiedText));
 		});
 
+		it('file drag-and-drop injects @<path> into SPA chat input', async function () {
+			this.timeout(30000);
+			const app = this.app as Application;
+			const timestamp = Date.now();
+			const droppedPath = join(app.workspacePathOrFolder, `opencode-smoke-drop-${timestamp}.ts`);
+			const expectedPrompt = `@opencode-smoke-drop-${timestamp}.ts`;
+
+			await openOpencodeSidebar(app);
+			await app.code.driver.evaluateInFrame(opencodeIframeSelector, `
+				(async () => {
+					const deadline = Date.now() + 10000;
+					while (Date.now() < deadline) {
+						const prompt = document.querySelector('[data-component="prompt-input"]');
+						if (prompt instanceof HTMLElement) {
+							return;
+						}
+
+						await new Promise(resolve => setTimeout(resolve, 100));
+					}
+
+					throw new Error('prompt-input not found after 10s timeout');
+				})()
+			`);
+
+			const dispatch = await app.code.driver.evaluateExpression<{
+				ok: boolean;
+				reason?: string;
+				containerTag?: string;
+				containerClass?: string;
+				dragOverPrevented?: boolean;
+				dropPrevented?: boolean;
+				dragEnterPointerEvents?: string;
+				finalPointerEvents?: string;
+			}>(`
+				(() => {
+					const iframe = document.querySelector(${JSON.stringify(opencodeIframeSelector)});
+					if (!(iframe instanceof HTMLIFrameElement)) {
+						return { ok: false, reason: 'iframe not found' };
+					}
+
+					const container = iframe.closest('.pane-body') || iframe.parentElement?.parentElement || iframe.parentElement;
+					if (!(container instanceof HTMLElement)) {
+						return { ok: false, reason: 'sidebar outer container not found' };
+					}
+
+					const rect = container.getBoundingClientRect();
+					const clientX = Math.max(Math.floor(rect.left + Math.min(24, Math.max(rect.width / 2, 1))), 1);
+					const clientY = Math.max(Math.floor(rect.top + Math.min(24, Math.max(rect.height / 2, 1))), 1);
+					const uriList = 'file://' + ${JSON.stringify(droppedPath)}.replace(/#/g, '%23').replace(/[?]/g, '%3F') + String.fromCharCode(13, 10);
+
+					function createDataTransfer() {
+						try {
+							const dt = new DataTransfer();
+							dt.setData('text/uri-list', uriList);
+							return dt;
+						} catch {
+							const data = new Map([['text/uri-list', uriList]]);
+							return {
+								types: Array.from(data.keys()),
+								getData(type) {
+									return data.get(type) || '';
+								},
+								setData(type, value) {
+									data.set(type, value);
+								},
+								files: [],
+								items: [],
+								dropEffect: 'none',
+								effectAllowed: 'all',
+							};
+						}
+					}
+
+					function createDragEvent(type, dataTransfer) {
+						try {
+							return new DragEvent(type, {
+								bubbles: true,
+								cancelable: true,
+								dataTransfer,
+								clientX,
+								clientY,
+							});
+						} catch {
+							const event = new Event(type, { bubbles: true, cancelable: true });
+							Object.defineProperty(event, 'dataTransfer', { value: dataTransfer });
+							Object.defineProperty(event, 'clientX', { value: clientX });
+							Object.defineProperty(event, 'clientY', { value: clientY });
+							return event;
+						}
+					}
+
+					const dragEnter = createDragEvent('dragenter', createDataTransfer());
+					window.dispatchEvent(dragEnter);
+					const dragEnterPointerEvents = iframe.style.pointerEvents;
+
+					const dragOver = createDragEvent('dragover', createDataTransfer());
+					container.dispatchEvent(dragOver);
+					if (!dragOver.defaultPrevented) {
+						return {
+							ok: false,
+							reason: 'drop handler not attached: dragover did not preventDefault',
+							containerTag: container.tagName,
+							containerClass: container.className,
+							dragEnterPointerEvents,
+							dragOverPrevented: dragOver.defaultPrevented,
+						};
+					}
+
+					const drop = createDragEvent('drop', createDataTransfer());
+					container.dispatchEvent(drop);
+
+					return {
+						ok: true,
+						containerTag: container.tagName,
+						containerClass: container.className,
+						dragOverPrevented: dragOver.defaultPrevented,
+						dropPrevented: drop.defaultPrevented,
+						dragEnterPointerEvents,
+						finalPointerEvents: iframe.style.pointerEvents,
+					};
+				})()
+			`);
+
+			assert.strictEqual(dispatch.ok, true, dispatch.reason ?? `drop dispatch failed: ${JSON.stringify(dispatch)}`);
+			assert.strictEqual(dispatch.dragEnterPointerEvents, 'none', `iframe pointer-events not disabled during dragenter: ${JSON.stringify(dispatch)}`);
+			assert.strictEqual(dispatch.dragOverPrevented, true, `dragover was not handled: ${JSON.stringify(dispatch)}`);
+			assert.strictEqual(dispatch.dropPrevented, true, `drop was not handled: ${JSON.stringify(dispatch)}`);
+			assert.strictEqual(dispatch.finalPointerEvents, '', `iframe pointer-events not reset after drop: ${JSON.stringify(dispatch)}`);
+
+			await app.code.driver.evaluateInFrame(opencodeIframeSelector, `
+				(async () => {
+					const deadline = Date.now() + 5000;
+					let lastText = '';
+					while (Date.now() < deadline) {
+						const prompt = document.querySelector('[data-component="prompt-input"]');
+						if (prompt instanceof HTMLElement) {
+							lastText = (prompt.textContent || '').trim();
+							if (lastText.includes(${JSON.stringify(expectedPrompt)})) {
+								return;
+							}
+						}
+
+						await new Promise(resolve => setTimeout(resolve, 100));
+					}
+
+					throw new Error('path not in chat input after 5s timeout; expected ' + ${JSON.stringify(expectedPrompt)} + '; last text=' + JSON.stringify(lastText));
+				})()
+			`);
+		});
+
 		it('SPA iframe is loopback-origin and global drop listener responds to text/plain', async function () {
 			const app = this.app as Application;
 			await openOpencodeSidebar(app);
-			const probe = await app.code.driver.evaluateExpression<{ ok: boolean; reason?: string; iframeOrigin?: string; prevented?: boolean }>(`
+			const probe = await app.code.driver.evaluateInFrame<{ ok: boolean; reason?: string; iframeOrigin?: string; prevented?: boolean }>(opencodeIframeSelector, `
 				(() => {
-					const iframe = document.querySelector('iframe');
-					const win = iframe && iframe.contentWindow;
-					if (!win) return { ok: false, reason: 'no iframe' };
-					const iframeOrigin = win.location.origin;
+					const iframeOrigin = location.origin;
 					const dt = new DataTransfer();
 					dt.setData('text/plain', '/tmp/opencode-smoke-probe.txt');
 					const evt = new DragEvent('dragover', { dataTransfer: dt, bubbles: true, cancelable: true });
 					// dispatchEvent returns false if any listener called preventDefault().
 					// SPA's handleGlobalDragOver in attachments.ts calls preventDefault() when hasText.
-					const delivered = win.document.dispatchEvent(evt);
+					const delivered = document.dispatchEvent(evt);
 					return { ok: true, iframeOrigin, prevented: delivered === false };
 				})()
 			`);

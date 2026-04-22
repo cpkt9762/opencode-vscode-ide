@@ -193,6 +193,25 @@ export class PlaywrightDriver {
 		return await this.page.evaluate(expression) as T;
 	}
 
+	private async getFrame(selector: string): Promise<playwright.Frame> {
+		const deadline = Date.now() + 30000;
+		while (Date.now() < deadline) {
+			const handle = await this.page.locator(selector).first().elementHandle();
+			const frame = await handle?.contentFrame();
+			if (frame) {
+				return frame;
+			}
+
+			await new Promise(resolve => setTimeout(resolve, 100));
+		}
+
+		throw new Error(`Frame not ready for selector: ${selector}`);
+	}
+
+	async evaluateInFrame<T = unknown>(selector: string, expression: string): Promise<T> {
+		return await (await this.getFrame(selector)).evaluate(expression) as T;
+	}
+
 	/**
 	 * Get information about elements matching a selector.
 	 */
