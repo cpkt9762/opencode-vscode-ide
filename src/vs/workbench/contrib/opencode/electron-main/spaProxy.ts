@@ -383,44 +383,98 @@ export const BOOTSTRAP = `<script>
     }
   }, true)
   var pendingPaste = false
-  function findPromptInput() {
-    return document.querySelector('textarea[name="prompt"], textarea[placeholder*="message" i], textarea[placeholder*="Message"], textarea[aria-label*="message" i], textarea[aria-label*="Message"]') || document.querySelector('[contenteditable="true"]')
+  function findPromptTarget() {
+	return document.querySelector('[data-component="prompt-input"]') || document.querySelector('[contenteditable="true"]')
+  }
+  function dispatchInsertInput(target, text) {
+	try {
+	  target.dispatchEvent(new InputEvent("input", {
+		bubbles: true,
+		cancelable: false,
+		inputType: "insertText",
+		data: text,
+	  }))
+	  return
+	} catch (e) {}
+	try {
+	  target.dispatchEvent(new Event("input", { bubbles: true }))
+	} catch (e) {}
+  }
+  function insertTextIntoContentEditable(el, text) {
+	el.focus()
+	var sel = window.getSelection()
+	var range
+	if (sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
+	  range = sel.getRangeAt(0)
+	} else {
+	  range = document.createRange()
+	  range.selectNodeContents(el)
+	  range.collapse(false)
+	}
+	var needSpace = false
+	try {
+	  var before = range.startContainer
+	  if (before && before.nodeType === 3) {
+		var beforeText = before.textContent || ""
+		var off = range.startOffset
+		if (off > 0 && !/\\s$/.test(beforeText.slice(0, off))) needSpace = true
+	  } else if (el.textContent && !/\\s$/.test(el.textContent)) {
+		needSpace = true
+	  }
+	} catch (e) {}
+	var insertText = (needSpace ? " " : "") + text + " "
+	var ok = false
+	try {
+	  ok = document.execCommand("insertText", false, insertText)
+	} catch (e) {
+	  ok = false
+	}
+	if (!ok) {
+	  range.deleteContents()
+	  var tn = document.createTextNode(insertText)
+	  range.insertNode(tn)
+	  range.setStartAfter(tn)
+	  range.collapse(true)
+	  if (sel) {
+		sel.removeAllRanges()
+		sel.addRange(range)
+	  }
+	  dispatchInsertInput(el, insertText)
+	}
+	return true
   }
   function insertPromptText(text) {
-    var target = findPromptInput()
-    if (!target) {
-      blog("insert-prompt target not found")
-      return false
-    }
-    if ((target.tagName === "TEXTAREA" || target.tagName === "INPUT") && typeof target.value === "string") {
-      var value = target.value
-      var start = typeof target.selectionStart === "number" ? target.selectionStart : value.length
-      var end = typeof target.selectionEnd === "number" ? target.selectionEnd : value.length
-      var before = value.slice(0, start)
-      var after = value.slice(end)
-      var prefix = before && !/\\s$/.test(before) ? " " : ""
-      var next = before + prefix + text + after
-      var proto = target.tagName === "TEXTAREA" ? window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype : window.HTMLInputElement && window.HTMLInputElement.prototype
-      var setter = proto ? Object.getOwnPropertyDescriptor(proto, "value") : null
-      if (setter && typeof setter.set === "function") {
-        setter.set.call(target, next)
-      } else {
-        target.value = next
-      }
-      target.dispatchEvent(new Event("input", { bubbles: true }))
-      if (typeof target.focus === "function") target.focus()
-      var cursor = before.length + prefix.length + text.length
-      if (typeof target.setSelectionRange === "function") target.setSelectionRange(cursor, cursor)
-      return true
-    }
-    if (typeof target.textContent === "string") {
-      target.textContent = target.textContent ? target.textContent + " " + text : text
-      target.dispatchEvent(new Event("input", { bubbles: true }))
-      if (typeof target.focus === "function") target.focus()
-      return true
-    }
-    blog("insert-prompt target unsupported")
-    return false
+	var target = findPromptTarget()
+	if (!target) {
+	  blog("insert-prompt target not found")
+	  return false
+	}
+	if (target.isContentEditable) {
+	  return insertTextIntoContentEditable(target, text)
+	}
+	if ((target.tagName === "TEXTAREA" || target.tagName === "INPUT") && typeof target.value === "string") {
+	  var value = target.value
+	  var start = typeof target.selectionStart === "number" ? target.selectionStart : value.length
+	  var end = typeof target.selectionEnd === "number" ? target.selectionEnd : value.length
+	  var before = value.slice(0, start)
+	  var after = value.slice(end)
+	  var prefix = before && !/\\s$/.test(before) ? " " : ""
+	  var next = before + prefix + text + after
+	  var proto = target.tagName === "TEXTAREA" ? window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype : window.HTMLInputElement && window.HTMLInputElement.prototype
+	  var setter = proto ? Object.getOwnPropertyDescriptor(proto, "value") : null
+	  if (setter && typeof setter.set === "function") {
+		setter.set.call(target, next)
+	  } else {
+		target.value = next
+	  }
+	  target.dispatchEvent(new Event("input", { bubbles: true }))
+	  if (typeof target.focus === "function") target.focus()
+	  var cursor = before.length + prefix.length + text.length
+	  if (typeof target.setSelectionRange === "function") target.setSelectionRange(cursor, cursor)
+	  return true
+	}
+	blog("insert-prompt target unsupported tag=" + target.tagName)
+	return false
   }
   window.addEventListener("message", function(e) {
     if (e.data && e.data.type === "opencode-web.insert-prompt") {

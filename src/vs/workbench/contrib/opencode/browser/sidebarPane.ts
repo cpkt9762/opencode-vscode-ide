@@ -84,6 +84,7 @@ export class OpencodeSidebarPane extends ViewPane {
 	private loadRequest = 0;
 	private workspaceDir = "";
 	private iframe: HTMLIFrameElement | undefined;
+	private dragActive = false;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -268,6 +269,7 @@ export class OpencodeSidebarPane extends ViewPane {
 		root.appendChild(shell);
 		container.appendChild(root);
 		this.registerDropTargets(container);
+		this.registerIframeDragPassthrough(container, iframe);
 
 		this.bodyRoot = root;
 		this.shell = shell;
@@ -280,6 +282,7 @@ export class OpencodeSidebarPane extends ViewPane {
 		this._register(this.contextService.onDidChangeWorkspaceFolders(() => this.updateWorkspace()));
 		this._register(
 			toDisposable(() => {
+				this.setIframeDragInterception(iframe, false);
 				this.clearLoadingTimer();
 				this.loadRequest += 1;
 				this.bodyRoot = undefined;
@@ -449,6 +452,37 @@ export class OpencodeSidebarPane extends ViewPane {
 		}));
 	}
 
+	private registerIframeDragPassthrough(container: HTMLElement, iframe: HTMLIFrameElement): void {
+		const view = container.ownerDocument.defaultView;
+		if (!view) {
+			return;
+		}
+
+		const updateDragState = (event: DragEvent) => {
+			this.setIframeDragInterception(
+				iframe,
+				this.isRelevantDrag(event.dataTransfer) && this.isEventInsideContainer(container, event),
+			);
+		};
+
+		this._register(addDisposableListener(view, EventType.DRAG_ENTER, updateDragState, true));
+		this._register(addDisposableListener(view, EventType.DRAG_OVER, updateDragState, true));
+		this._register(addDisposableListener(view, EventType.DRAG_LEAVE, (event: DragEvent) => {
+			if (!this.dragActive) {
+				return;
+			}
+
+			if (event.clientX !== 0 || event.clientY !== 0) {
+				return;
+			}
+
+			this.setIframeDragInterception(iframe, false);
+		}, true));
+		this._register(addDisposableListener(view, EventType.DROP, () => {
+			this.setIframeDragInterception(iframe, false);
+		}, true));
+	}
+
 	private canHandleDrop(event: DragEvent): boolean {
 		return containsDragType(
 			event,
@@ -457,6 +491,38 @@ export class OpencodeSidebarPane extends ViewPane {
 			CodeDataTransfers.FILES,
 			CodeDataTransfers.EDITORS,
 		);
+	}
+
+	private isRelevantDrag(dataTransfer: DataTransfer | null | undefined): boolean {
+		const types = Array.from(dataTransfer?.types ?? []);
+		return types.some(type =>
+			type === DataTransfers.FILES ||
+			type === "text/uri-list" ||
+			type === CodeDataTransfers.FILES ||
+			type === CodeDataTransfers.EDITORS,
+		);
+	}
+
+	private isEventInsideContainer(container: HTMLElement, event: DragEvent): boolean {
+		if (event.target instanceof Node && container.contains(event.target)) {
+			return true;
+		}
+
+		if (event.clientX === 0 && event.clientY === 0) {
+			return false;
+		}
+
+		const rect = container.getBoundingClientRect();
+		return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+	}
+
+	private setIframeDragInterception(iframe: HTMLIFrameElement, active: boolean): void {
+		if (this.dragActive === active) {
+			return;
+		}
+
+		this.dragActive = active;
+		iframe.style.pointerEvents = active ? "none" : "";
 	}
 
 	private async handlePromptDrop(event: DragEvent): Promise<void> {
