@@ -278,6 +278,9 @@ const desktopResourcePatterns = [
 	// Media - images
 	'vs/workbench/contrib/welcomeGettingStarted/common/media/**/*.svg',
 	'vs/workbench/contrib/welcomeGettingStarted/common/media/**/*.png',
+
+	// OpenCode SPA (vendored from packages/app)
+	'vs/workbench/contrib/opencode/media/spa/**',
 	'vs/workbench/contrib/extensions/browser/media/{theme-icon.png,language-icon.svg}',
 	'vs/workbench/services/extensionManagement/common/media/*.svg',
 	'vs/workbench/services/extensionManagement/common/media/*.png',
@@ -580,6 +583,11 @@ async function copyResources(outDir: string, target: BuildTarget): Promise<void>
 		for (const file of files) {
 			const srcPath = path.join(REPO_ROOT, SRC_DIR, file);
 			const destPath = path.join(REPO_ROOT, outDir, file);
+
+			const stat = await fs.promises.stat(srcPath);
+			if (stat.isDirectory()) {
+				continue;
+			}
 
 			await copyFile(srcPath, destPath);
 			copied++;
