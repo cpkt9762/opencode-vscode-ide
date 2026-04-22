@@ -373,8 +373,7 @@ export function setup(logger: Logger) {
 					const deadline = Date.now() + 10000;
 					while (Date.now() < deadline) {
 						const prompt = document.querySelector('[data-component="prompt-input"]');
-						if (prompt instanceof HTMLElement && /\\/session(?:[/?#]|$)/.test(location.pathname)) {
-							await new Promise(resolve => setTimeout(resolve, 300));
+						if (prompt instanceof HTMLElement) {
 							return {
 								pathname: location.pathname,
 								promptText: (prompt.textContent || '').trim(),
@@ -384,7 +383,7 @@ export function setup(logger: Logger) {
 						await new Promise(resolve => setTimeout(resolve, 100));
 					}
 
-					throw new Error('prompt/session route not ready after 10s timeout; pathname=' + location.pathname);
+					throw new Error('prompt input not ready after 10s timeout; pathname=' + location.pathname);
 				})()
 			`);
 
