@@ -76,14 +76,53 @@ function extractBootstrap(body: string) {
 	return match[1];
 }
 
-function runStorage(script: string, dir: string) {
+
+type BootstrapRun = {
+	fireWindowMessage(data: Record<string, unknown>): void;
+	history: { pushState(data: unknown, unused: string, url?: string): void; replaceState(data: unknown, unused: string, url?: string): void };
+	location: { href: string; hostname: string; origin: string; pathname: string };
+	parentMessages: Record<string, unknown>[];
+	storage: Map<string, string>;
+};
+
+function runBootstrap(script: string, dir: string, options: { querySelector?: (selector: string) => unknown } = {}): BootstrapRun {
 	const storage = new Map<string, string>();
+	const parentMessages: Record<string, unknown>[] = [];
+	const listeners = new Map<string, Array<(event: { data?: unknown }) => void>>();
 	const localStorage = {
 		getItem(key: string) {
 			return storage.get(key) ?? null;
 		},
 		setItem(key: string, value: string) {
 			storage.set(key, value);
+		},
+	};
+	const location = {
+		href: `http://127.0.0.1:1/${encodeWorkspaceDir(dir)}`,
+		hostname: '127.0.0.1',
+		origin: 'http://127.0.0.1:1',
+		pathname: `/${encodeWorkspaceDir(dir)}`,
+	};
+	const updateLocation = (url?: string) => {
+		if (!url) {
+			return;
+		}
+
+		if (url.startsWith('/')) {
+			location.pathname = url;
+			location.href = `${location.origin}${url}`;
+			return;
+		}
+
+		location.href = url;
+		location.pathname = new URL(url).pathname;
+	};
+	const history = {
+		pushState(_data: unknown, _unused: string, url?: string) {
+			updateLocation(url);
+		},
+		replaceState(_data: unknown, _unused: string, url?: string) {
+			updateLocation(url);
 		},
 	};
 	const document = {
@@ -96,16 +135,25 @@ function runStorage(script: string, dir: string) {
 		head: {
 			appendChild() {},
 		},
+		querySelector(selector: string) {
+			return options.querySelector?.(selector) ?? null;
+		},
+		readyState: 'complete',
 		createElement() {
 			return {
 				addEventListener() {},
 				appendChild() {},
+				dispatchEvent() {},
+				focus() {},
 				getBoundingClientRect() {
 					return { height: 0, width: 0 };
 				},
 				parentNode: { removeChild() {} },
+				querySelector() { return null; },
 				setAttribute() {},
+				setSelectionRange() {},
 				style: {},
+				tagName: 'DIV',
 				textContent: '',
 				value: '',
 			};
@@ -121,7 +169,13 @@ function runStorage(script: string, dir: string) {
 		},
 	};
 	const window = {
-		addEventListener() {},
+		HTMLInputElement: function HTMLInputElement() {},
+		HTMLTextAreaElement: function HTMLTextAreaElement() {},
+		addEventListener(type: string, listener: (event: { data?: unknown }) => void) {
+			const existing = listeners.get(type) ?? [];
+			existing.push(listener);
+			listeners.set(type, existing);
+		},
 		document,
 		getSelection() {
 			return {
@@ -133,9 +187,17 @@ function runStorage(script: string, dir: string) {
 		},
 		innerHeight: 768,
 		innerWidth: 1024,
-		parent: { postMessage() {} },
+		parent: {
+			postMessage(message: Record<string, unknown>) {
+				parentMessages.push(message);
+			},
+		},
 		__opencodeVscodeApi: undefined,
 	};
+	function Event(this: { bubbles: boolean; type: string }, type: string, init?: { bubbles?: boolean }) {
+		this.type = type;
+		this.bubbles = Boolean(init?.bubbles);
+	}
 	class XMLHttpRequestStub {
 		status = 200;
 		responseText = '[]';
@@ -144,7 +206,8 @@ function runStorage(script: string, dir: string) {
 		send() {}
 	}
 
-	runInNewContext(script, {
+		runInNewContext(script, {
+		Event,
 		JSON,
 		Object,
 		Promise,
@@ -154,21 +217,32 @@ function runStorage(script: string, dir: string) {
 			return Buffer.from(value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat(padding), 'base64').toString('binary');
 		},
 		decodeURIComponent,
-		document,
-		escape(value: string) {
-			return value;
-		},
-		localStorage,
-		location: {
-			hostname: '127.0.0.1',
-			origin: 'http://127.0.0.1:1',
-			pathname: `/${encodeWorkspaceDir(dir)}`,
-		},
-		navigator: { platform: 'Mac' },
-		window,
-	});
+			document,
+			escape(value: string) {
+				return value;
+			},
+			history,
+			localStorage,
+			location,
+			navigator: { platform: 'Mac' },
+			window,
+		});
 
-	return storage;
+	return {
+		fireWindowMessage(data: Record<string, unknown>) {
+			for (const listener of listeners.get('message') ?? []) {
+				listener({ data });
+			}
+		},
+		history,
+		location,
+		parentMessages,
+		storage,
+	};
+}
+
+function runStorage(script: string, dir: string) {
+	return runBootstrap(script, dir).storage;
 }
 
 suite('SpaProxy', () => {
@@ -511,6 +585,73 @@ suite('SpaProxy', () => {
 					shellToolPartsExpanded: true,
 				},
 			});
+		} finally {
+			await closeServer(site.server);
+			await closeServer(backend);
+			rmSync(dist, { force: true, recursive: true });
+		}
+	});
+
+	test('bootstrap reports session changes', async () => {
+		const dist = createDist({ 'index.html': '<!doctype html><html><head></head><body></body></html>' });
+		const backend = createServer((_request, response) => {
+			response.writeHead(200, { 'content-type': 'application/json' });
+			response.end('{}');
+		});
+		await new Promise<void>(resolve => backend.listen(0, '127.0.0.1', resolve));
+		const address = backend.address();
+		const site = await start({ backend: `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`, dist });
+
+		try {
+			const response = await get(site.port, '/');
+			const dir = '/tmp/current';
+			const run = runBootstrap(extractBootstrap(response.body), dir);
+
+			assert.ok(run.parentMessages.some(message => message.type === 'opencode-web.session-changed' && message.sessionId === ''));
+
+			run.history.pushState({}, '', `/${encodeWorkspaceDir(dir)}/session/session-123`);
+
+			assert.ok(run.parentMessages.some(message => message.type === 'opencode-web.session-changed' && message.sessionId === 'session-123'));
+		} finally {
+			await closeServer(site.server);
+			await closeServer(backend);
+			rmSync(dist, { force: true, recursive: true });
+		}
+	});
+
+	test('bootstrap inserts prompt text on message', async () => {
+		const dist = createDist({ 'index.html': '<!doctype html><html><head></head><body></body></html>' });
+		const backend = createServer((_request, response) => {
+			response.writeHead(200, { 'content-type': 'application/json' });
+			response.end('{}');
+		});
+		await new Promise<void>(resolve => backend.listen(0, '127.0.0.1', resolve));
+		const address = backend.address();
+		const site = await start({ backend: `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`, dist });
+		const textarea = {
+			dispatchEvent() {},
+			focus() {},
+			selectionEnd: 5,
+			selectionStart: 5,
+			setSelectionRange(start: number, end: number) {
+				this.selectionStart = start;
+				this.selectionEnd = end;
+			},
+			tagName: 'TEXTAREA',
+			value: 'hello',
+		};
+
+		try {
+			const response = await get(site.port, '/');
+			const run = runBootstrap(extractBootstrap(response.body), '/tmp/current', {
+				querySelector: selector => selector.includes('textarea') ? textarea : null,
+			});
+
+			run.fireWindowMessage({ type: 'opencode-web.insert-prompt', text: '@src/app.ts' });
+
+			assert.strictEqual(textarea.value, 'hello @src/app.ts');
+			assert.strictEqual(textarea.selectionStart, textarea.value.length);
+			assert.strictEqual(textarea.selectionEnd, textarea.value.length);
 		} finally {
 			await closeServer(site.server);
 			await closeServer(backend);

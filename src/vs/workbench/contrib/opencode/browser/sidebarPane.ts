@@ -2,15 +2,24 @@
  *  Copyright (c) pingzi. Licensed under the Apache License, Version 2.0.
  *--------------------------------------------------------------------------------------------*/
 
+import { DataTransfers } from "../../../../base/browser/dnd.js";
+import { addDisposableListener, EventType } from "../../../../base/browser/dom.js";
 import { Orientation } from "../../../../base/browser/ui/sash/sash.js";
 import { toDisposable } from "../../../../base/common/lifecycle.js";
 import { FileAccess } from "../../../../base/common/network.js";
+import { relativePath } from "../../../../base/common/resources.js";
+import { URI } from "../../../../base/common/uri.js";
 import * as nls from "../../../../nls.js";
 import { IClipboardService } from "../../../../platform/clipboard/common/clipboardService.js";
 import { ICommandService } from "../../../../platform/commands/common/commands.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
 import { IContextKeyService } from "../../../../platform/contextkey/common/contextkey.js";
 import { IContextMenuService } from "../../../../platform/contextview/browser/contextView.js";
+import {
+	CodeDataTransfers,
+	containsDragType,
+	extractEditorsAndFilesDropData,
+} from "../../../../platform/dnd/browser/dnd.js";
 import { IHoverService } from "../../../../platform/hover/browser/hover.js";
 import { SyncDescriptor } from "../../../../platform/instantiation/common/descriptors.js";
 import { IInstantiationService } from "../../../../platform/instantiation/common/instantiation.js";
@@ -18,6 +27,11 @@ import { IKeybindingService } from "../../../../platform/keybinding/common/keybi
 import { ILogService } from "../../../../platform/log/common/log.js";
 import { IOpenerService } from "../../../../platform/opener/common/opener.js";
 import { Registry } from "../../../../platform/registry/common/platform.js";
+import {
+	IStorageService,
+	StorageScope,
+	StorageTarget,
+} from "../../../../platform/storage/common/storage.js";
 import { IThemeService } from "../../../../platform/theme/common/themeService.js";
 import { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
 import {
@@ -49,6 +63,7 @@ const opencodeContainerTitle = nls.localize2(
 );
 const opencodeViewTitle = nls.localize2("opencodeViewTitle", "Chat");
 const loadingTimeout = 8000;
+const lastSessionStorageKey = "opencode.lastSessionId";
 const allowedCommands = new Set([
 	"workbench.action.terminal.toggleTerminal",
 	"workbench.view.explorer",
@@ -85,6 +100,7 @@ export class OpencodeSidebarPane extends ViewPane {
 		private readonly editCodeService: IEditCodeService,
 		private readonly contextService: IWorkspaceContextService,
 		private readonly spaProxyService: ISpaProxyService,
+		private readonly storageService: IStorageService,
 	) {
 		super(
 			options,
@@ -251,6 +267,7 @@ export class OpencodeSidebarPane extends ViewPane {
 		root.appendChild(iframe);
 		root.appendChild(shell);
 		container.appendChild(root);
+		this.registerDropTargets(container);
 
 		this.bodyRoot = root;
 		this.shell = shell;
@@ -310,6 +327,22 @@ export class OpencodeSidebarPane extends ViewPane {
 				}
 
 				this.setState("ready");
+				return;
+			}
+
+			case "opencode-web.session-changed": {
+				const sessionId = (message as IOpencodeMessage & { sessionId?: unknown }).sessionId;
+				if (typeof sessionId === "string" && sessionId) {
+					this.storageService.store(
+						lastSessionStorageKey,
+						sessionId,
+						StorageScope.WORKSPACE,
+						StorageTarget.MACHINE,
+					);
+					return;
+				}
+
+				this.storageService.remove(lastSessionStorageKey, StorageScope.WORKSPACE);
 				return;
 			}
 
@@ -391,6 +424,102 @@ export class OpencodeSidebarPane extends ViewPane {
 				return;
 			}
 		}
+	}
+
+	private registerDropTargets(container: HTMLElement): void {
+		this._register(addDisposableListener(container, EventType.DRAG_OVER, (event: DragEvent) => {
+			if (!this.canHandleDrop(event)) {
+				return;
+			}
+
+			event.preventDefault();
+			event.stopPropagation();
+			if (event.dataTransfer) {
+				event.dataTransfer.dropEffect = "copy";
+			}
+		}));
+		this._register(addDisposableListener(container, EventType.DROP, (event: DragEvent) => {
+			if (!this.canHandleDrop(event)) {
+				return;
+			}
+
+			event.preventDefault();
+			event.stopPropagation();
+			void this.handlePromptDrop(event);
+		}));
+	}
+
+	private canHandleDrop(event: DragEvent): boolean {
+		return containsDragType(
+			event,
+			DataTransfers.FILES,
+			"text/uri-list",
+			CodeDataTransfers.FILES,
+			CodeDataTransfers.EDITORS,
+		);
+	}
+
+	private async handlePromptDrop(event: DragEvent): Promise<void> {
+		const text = await this.getDropPromptText(event);
+		if (!text) {
+			return;
+		}
+
+		this.messageBridge.send({
+			type: "opencode-web.insert-prompt",
+			text,
+		} as IOpencodeMessage & { text: string });
+	}
+
+	private async getDropPromptText(event: DragEvent): Promise<string | undefined> {
+		const editors = await this.instantiationService.invokeFunction(accessor => extractEditorsAndFilesDropData(accessor, event));
+		const fromEditors = editors
+			.flatMap(editor => editor.resource ? [this.toPromptPath(editor.resource)] : [])
+			.filter((path): path is string => Boolean(path));
+
+		if (fromEditors.length > 0) {
+			return [...new Set(fromEditors)].map(path => `@${path}`).join(" ");
+		}
+
+		const uriList = event.dataTransfer?.getData("text/uri-list");
+		if (!uriList) {
+			return undefined;
+		}
+
+		const paths = uriList
+			.split(/\r?\n/)
+			.map(line => line.trim())
+			.filter(line => line && !line.startsWith("#"))
+			.flatMap(line => {
+				try {
+					const path = this.toPromptPath(URI.parse(line));
+					return path ? [path] : [];
+				} catch {
+					return [];
+				}
+			});
+
+		if (paths.length === 0) {
+			return undefined;
+		}
+
+		return [...new Set(paths)].map(path => `@${path}`).join(" ");
+	}
+
+	private toPromptPath(resource: URI): string | undefined {
+		const folder = this.contextService.getWorkspaceFolder(resource);
+		if (folder) {
+			const path = relativePath(folder.uri, resource);
+			if (path) {
+				return path;
+			}
+		}
+
+		if (resource.scheme === "file") {
+			return resource.fsPath;
+		}
+
+		return resource.path || undefined;
 	}
 
 	private createActionButton(label: string, run: () => void): HTMLButtonElement {
@@ -537,7 +666,13 @@ export class OpencodeSidebarPane extends ViewPane {
 			dist: FileAccess.asFileUri(opencodeSpaPath).fsPath,
 		});
 
-		return this.spaProxyService.url(workspaceDir);
+		const url = await this.spaProxyService.url(workspaceDir);
+		const sessionId = this.storageService.get(lastSessionStorageKey, StorageScope.WORKSPACE);
+		if (!sessionId) {
+			return url;
+		}
+
+		return `${url}/session/${encodeURIComponent(sessionId)}`;
 	}
 
 	private executeCommand(command: string): Promise<void> {
@@ -587,6 +722,7 @@ IOpencodeEditorService(OpencodeSidebarPane, "", 10);
 IEditCodeService(OpencodeSidebarPane, "", 11);
 IWorkspaceContextService(OpencodeSidebarPane, "", 12);
 ISpaProxyService(OpencodeSidebarPane, "", 13);
+IStorageService(OpencodeSidebarPane, "", 14);
 
 const opencodeViewContainer = Registry.as<IViewContainersRegistry>(
 	ViewExtensions.ViewContainersRegistry,

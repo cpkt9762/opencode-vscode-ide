@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { readFile } from 'node:fs/promises';
-import { createServer, request as req, type IncomingMessage, type OutgoingHttpHeaders, type Server, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type OutgoingHttpHeaders, request as req, type Server, type ServerResponse } from 'node:http';
 import { extname, join } from 'node:path';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -312,6 +312,34 @@ export const BOOTSTRAP = `<script>
   } catch(e) {}
   blog("lastProject=" + lps + " lastProjectSession=" + lpSession)
   function send(type, data) { try { window.parent.postMessage(Object.assign({type:type}, data), "*") } catch(e) {} }
+  function readSessionId() {
+    var parts = location.pathname.split("/session/")
+    if (parts.length < 2) return ""
+    return parts[1].split(/[?#/]/)[0] || ""
+  }
+  function reportSession() {
+    var sid = readSessionId()
+    send("opencode-web.session-changed", { sessionId: sid })
+  }
+  if (typeof history !== "undefined") {
+    if (typeof history.pushState === "function") {
+      var origPushState = history.pushState
+      history.pushState = function() {
+        var result = origPushState.apply(history, arguments)
+        reportSession()
+        return result
+      }
+    }
+    if (typeof history.replaceState === "function") {
+      var origReplaceState = history.replaceState
+      history.replaceState = function() {
+        var result = origReplaceState.apply(history, arguments)
+        reportSession()
+        return result
+      }
+    }
+  }
+  window.addEventListener("popstate", reportSession)
   if (document.readyState === "complete") {
     send("opencode-web.frame-ready", { url: location.href })
   } else {
@@ -319,6 +347,7 @@ export const BOOTSTRAP = `<script>
       send("opencode-web.frame-ready", { url: location.href })
     }, { once: true })
   }
+  reportSession()
   function insertAtCaret(text) {
     if (document.execCommand && document.execCommand("insertText", false, text)) return true
     var sel = window.getSelection()
@@ -354,7 +383,51 @@ export const BOOTSTRAP = `<script>
     }
   }, true)
   var pendingPaste = false
+  function findPromptInput() {
+    return document.querySelector('textarea[name="prompt"], textarea[placeholder*="message" i], textarea[placeholder*="Message"], textarea[aria-label*="message" i], textarea[aria-label*="Message"]') || document.querySelector('[contenteditable="true"]')
+  }
+  function insertPromptText(text) {
+    var target = findPromptInput()
+    if (!target) {
+      blog("insert-prompt target not found")
+      return false
+    }
+    if ((target.tagName === "TEXTAREA" || target.tagName === "INPUT") && typeof target.value === "string") {
+      var value = target.value
+      var start = typeof target.selectionStart === "number" ? target.selectionStart : value.length
+      var end = typeof target.selectionEnd === "number" ? target.selectionEnd : value.length
+      var before = value.slice(0, start)
+      var after = value.slice(end)
+      var prefix = before && !/\\s$/.test(before) ? " " : ""
+      var next = before + prefix + text + after
+      var proto = target.tagName === "TEXTAREA" ? window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype : window.HTMLInputElement && window.HTMLInputElement.prototype
+      var setter = proto ? Object.getOwnPropertyDescriptor(proto, "value") : null
+      if (setter && typeof setter.set === "function") {
+        setter.set.call(target, next)
+      } else {
+        target.value = next
+      }
+      target.dispatchEvent(new Event("input", { bubbles: true }))
+      if (typeof target.focus === "function") target.focus()
+      var cursor = before.length + prefix.length + text.length
+      if (typeof target.setSelectionRange === "function") target.setSelectionRange(cursor, cursor)
+      return true
+    }
+    if (typeof target.textContent === "string") {
+      target.textContent = target.textContent ? target.textContent + " " + text : text
+      target.dispatchEvent(new Event("input", { bubbles: true }))
+      if (typeof target.focus === "function") target.focus()
+      return true
+    }
+    blog("insert-prompt target unsupported")
+    return false
+  }
   window.addEventListener("message", function(e) {
+    if (e.data && e.data.type === "opencode-web.insert-prompt") {
+      var text = typeof e.data.text === "string" ? e.data.text : ""
+      if (text) insertPromptText(text)
+      return
+    }
     if (e.data && e.data.type === "opencode-web.clipboard-text") {
       var text = e.data.text || ""
       blog("clipboard-text received " + text.length + " chars")
