@@ -3,6 +3,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { type ChildProcess, execSync, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { accessSync, constants, existsSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -47,6 +48,7 @@ export const IOpencodeServeManager = createDecorator<IOpencodeServeManager>(
 export interface IOpencodeServeManager extends IDisposable {
 	readonly _serviceBrand: undefined;
 	start(): Promise<string>;
+	getPassword(): string | undefined;
 	stop(): Promise<void>;
 	readonly backendUrl: string | undefined;
 }
@@ -61,6 +63,7 @@ export class OpencodeServeManager
 
 	private process: ChildProcess | undefined;
 	private _backendUrl: string | undefined;
+	private password: string | undefined;
 	private startTask: Promise<string> | undefined;
 	private state: OpencodeProcessState = "stopped";
 	private weStarted = false;
@@ -69,6 +72,10 @@ export class OpencodeServeManager
 
 	get backendUrl(): string | undefined {
 		return this._backendUrl;
+	}
+
+	getPassword(): string | undefined {
+		return this.password;
 	}
 
 	constructor(
@@ -147,9 +154,13 @@ export class OpencodeServeManager
 	private async doStart(): Promise<string> {
 		this.clearRespawnTimer();
 		this.stopRequested = false;
+		this.password =
+			this.getServerPassword() ??
+			this.password ??
+			randomBytes(16).toString("hex");
 
 		const backendUrl = this.getConfiguredBackendUrl();
-		if (await this.isHealthy(backendUrl)) {
+		if (await this.isHealthy(backendUrl, this.password)) {
 			this.state = "running";
 			this.weStarted = false;
 			this._backendUrl = backendUrl;
@@ -169,7 +180,10 @@ export class OpencodeServeManager
 
 		const port = this.getPort();
 		const deadline = Date.now() + STARTUP_TIMEOUT;
-		const process = spawn(
+		const env = { ...process.env };
+		delete env.OPENCODE_SERVER_PASSWORD;
+		env.OPENCODE_SERVER_PASSWORD = this.password;
+		const proc = spawn(
 			binaryPath,
 			[
 				"serve",
@@ -180,20 +194,21 @@ export class OpencodeServeManager
 				"--print-logs",
 			],
 			{
+				env,
 				stdio: ["ignore", "pipe", "pipe"],
 				shell: platform() === "win32" && binaryPath.endsWith(".cmd"),
 			},
 		);
 
-		this.process = process;
+		this.process = proc;
 		this.state = "starting";
 		this.weStarted = true;
-		this.watchProcess(process);
+		this.watchProcess(proc);
 
 		try {
-			const readyUrl = await this.waitForReadyUrl(process, deadline);
+			const readyUrl = await this.waitForReadyUrl(proc, deadline);
 			const normalizedUrl = this.normalizeBackendUrl(readyUrl, port);
-			await this.waitForHealthy(normalizedUrl, deadline);
+			await this.waitForHealthy(normalizedUrl, deadline, this.password);
 			this.state = "running";
 			this._backendUrl = normalizedUrl;
 			this.logService.info("[opencode] opencode serve ready", normalizedUrl);
@@ -202,13 +217,13 @@ export class OpencodeServeManager
 			this.state = "stopped";
 			this._backendUrl = undefined;
 
-			if (this.process === process) {
+			if (this.process === proc) {
 				this.process = undefined;
 			}
 
-			if (process.exitCode === null && process.signalCode === null) {
-				this.kill(process, "SIGKILL");
-				await this.waitForExit(process);
+			if (proc.exitCode === null && proc.signalCode === null) {
+				this.kill(proc, "SIGKILL");
+				await this.waitForExit(proc);
 			}
 
 			throw this.toError(error);
@@ -331,9 +346,13 @@ export class OpencodeServeManager
 		});
 	}
 
-	private async waitForHealthy(url: string, deadline: number): Promise<void> {
+	private async waitForHealthy(
+		url: string,
+		deadline: number,
+		password: string | undefined,
+	): Promise<void> {
 		while (Date.now() < deadline) {
-			if (await this.isHealthy(url)) {
+			if (await this.isHealthy(url, password)) {
 				return;
 			}
 
@@ -345,9 +364,12 @@ export class OpencodeServeManager
 		);
 	}
 
-	private async isHealthy(url: string): Promise<boolean> {
+	private async isHealthy(
+		url: string,
+		password: string | undefined,
+	): Promise<boolean> {
 		try {
-			const response = await this.readHealth(url);
+			const response = await this.readHealth(url, password);
 			return response.statusCode === 401 || isHealthResponse(response.body);
 		} catch {
 			return false;
@@ -356,12 +378,24 @@ export class OpencodeServeManager
 
 	private readHealth(
 		url: string,
+		password: string | undefined,
 	): Promise<{ statusCode: number; body?: unknown }> {
 		const endpoint = new URL("/global/health", url);
 		const request = endpoint.protocol === "https:" ? httpsRequest : httpRequest;
+		const authorization = password
+			? `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`
+			: undefined;
 
 		return new Promise<{ statusCode: number; body?: unknown }>((resolve, reject) => {
-			const req = request(endpoint, { method: "GET" }, (response) => {
+			const req = request(
+				endpoint,
+				{
+					headers: authorization
+						? { Authorization: authorization }
+						: undefined,
+					method: "GET",
+				},
+				(response) => {
 				let body = "";
 
 				response.setEncoding("utf8");
@@ -395,7 +429,8 @@ export class OpencodeServeManager
 						reject(this.toError(error));
 					}
 				});
-			});
+				},
+			);
 
 			req.setTimeout(HEALTH_TIMEOUT, () => {
 				req.destroy(new Error(`Timed out waiting for ${endpoint.toString()}`));
@@ -515,6 +550,13 @@ export class OpencodeServeManager
 			.getValue<string>("opencode.binaryPath")
 			?.trim();
 		return configuredPath ? configuredPath : undefined;
+	}
+
+	private getServerPassword(): string | undefined {
+		const configuredPassword = this.configurationService
+			.getValue<string>("opencode.serverPassword")
+			?.trim();
+		return configuredPassword ? configuredPassword : undefined;
 	}
 
 	private getConfiguredBackendUrl(): string {

@@ -255,6 +255,31 @@ suite('SpaProxy', () => {
 		}
 	});
 
+	test('proxy injects Authorization header when password is provided', async () => {
+		const dist = createDist({ 'index.html': '<!doctype html><html><head></head><body></body></html>' });
+		const backend = createServer((request, response) => {
+			response.writeHead(200, { 'content-type': 'application/json' });
+			response.end(JSON.stringify({ authorization: request.headers.authorization ?? null }));
+		});
+		await new Promise<void>(resolve => backend.listen(0, '127.0.0.1', resolve));
+		const address = backend.address();
+		const backendUrl = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
+		const options = { backend: backendUrl, dist, password: 'TESTPASSWORD' };
+		const site = await start(options);
+
+		try {
+			const response = await get(site.port, '/project/current');
+			assert.strictEqual(response.status, 200);
+			assert.deepStrictEqual(JSON.parse(response.body), {
+				authorization: `Basic ${Buffer.from('opencode:TESTPASSWORD').toString('base64')}`,
+			});
+		} finally {
+			await closeServer(site.server);
+			await closeServer(backend);
+			rmSync(dist, { force: true, recursive: true });
+		}
+	});
+
 	test('SSE flush + stream', async () => {
 		const dist = createDist({ 'index.html': '<!doctype html><html><head></head><body></body></html>' });
 		const sent: number[] = [];

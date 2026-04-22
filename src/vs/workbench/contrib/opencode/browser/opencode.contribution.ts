@@ -67,6 +67,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: '',
 			description: localize('opencodeBinaryPath', 'Override path to the opencode binary. Leave empty for auto-discovery.'),
 		},
+		'opencode.serverPassword': {
+			type: 'string',
+			default: '',
+			description: localize('opencodeServerPassword', 'Password for the opencode serve HTTP Basic auth. Leave empty to auto-generate a random one.'),
+		},
 	},
 });
 

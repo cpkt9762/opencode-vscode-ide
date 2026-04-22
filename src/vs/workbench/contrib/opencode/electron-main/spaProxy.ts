@@ -446,6 +446,7 @@ type StartOptions = {
 	backend: string;
 	dist: string;
 	log?: (message: string) => void;
+	password?: string;
 };
 
 type ServeOptions = {
@@ -558,12 +559,39 @@ export function reuse(port: number, backend: string) {
 	});
 }
 
-export function proxy(incoming: IncomingMessage, res: ServerResponse, backend: URL, log: (message: string) => void) {
+function authHeader(password: string) {
+	return `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
+}
+
+function outgoingHeaders(
+	incoming: IncomingMessage,
+	backend: URL,
+	password: string | undefined,
+): OutgoingHttpHeaders {
+	const headers: OutgoingHttpHeaders = {
+		...incoming.headers,
+		host: backend.host,
+	};
+	if (!password) {
+		return headers;
+	}
+
+	headers.authorization = authHeader(password);
+	return headers;
+}
+
+export function proxy(
+	incoming: IncomingMessage,
+	res: ServerResponse,
+	backend: URL,
+	password: string | undefined,
+	log: (message: string) => void,
+) {
 	const want = sse(incoming.headers.accept);
 	const target = new URL(incoming.url ?? '/', backend);
 	const outgoing = req(
 		{
-			headers: { ...incoming.headers, host: backend.host },
+			headers: outgoingHeaders(incoming, backend, password),
 			hostname: backend.hostname,
 			method: incoming.method,
 			path: `${target.pathname}${target.search}`,
@@ -650,7 +678,7 @@ export async function start(options: StartOptions): Promise<{ server: Server; po
 		}
 
 		if (API.some(prefix => url.pathname.startsWith(prefix))) {
-			proxy(incoming, res, backend, log);
+			proxy(incoming, res, backend, options.password, log);
 			return;
 		}
 
@@ -694,6 +722,7 @@ export class SpaProxyService implements ISpaProxyService {
 
 	private backend = '';
 	private dist = '';
+	private password: string | undefined;
 	private port = 0;
 	private server: Server | undefined;
 
@@ -702,16 +731,29 @@ export class SpaProxyService implements ISpaProxyService {
 		private readonly opencodeServeManager: IOpencodeServeManager,
 	) {}
 
-	async start(options: { dist: string; backend?: string }) {
-		const backend = options.backend ?? this.opencodeServeManager.backendUrl ?? await this.opencodeServeManager.start();
+	async start(options: { dist: string; backend?: string; password?: string }) {
+		const backend =
+			options.backend ??
+			this.opencodeServeManager.backendUrl ??
+			await this.opencodeServeManager.start();
+		const password =
+			options.password ??
+			(options.backend ? undefined : this.opencodeServeManager.getPassword());
 
-		if (this.server && this.backend === backend && this.dist === options.dist && this.port) {
+		if (
+			this.server &&
+			this.backend === backend &&
+			this.dist === options.dist &&
+			this.password === password &&
+			this.port
+		) {
 			return { port: this.port };
 		}
 
 		await this.stop();
 		this.backend = backend;
 		this.dist = options.dist;
+		this.password = password;
 
 		const result = await start({
 			backend,
@@ -724,6 +766,7 @@ export class SpaProxyService implements ISpaProxyService {
 
 				this.logService.info(message);
 			},
+			password,
 		});
 
 		this.port = result.port;
@@ -738,6 +781,9 @@ export class SpaProxyService implements ISpaProxyService {
 
 		const server = this.server;
 		this.server = undefined;
+		this.backend = '';
+		this.dist = '';
+		this.password = undefined;
 		this.port = 0;
 		await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 	}
