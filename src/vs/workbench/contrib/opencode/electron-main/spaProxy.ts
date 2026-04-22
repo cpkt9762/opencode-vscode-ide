@@ -57,7 +57,23 @@ export const API = [
 
 export const BOOTSTRAP = `<script>
 ;(function(){
-  function blog(m){ try { window.parent && window.parent.postMessage({type:"opencode-web.spa-log",msg:"[bootstrap] "+m},"*") } catch(e){} }
+  var bootlogs = []
+  try {
+    if (typeof window !== "undefined") {
+      if (Array.isArray(window.__opencodeBootstrapLogs)) {
+        bootlogs = window.__opencodeBootstrapLogs
+      } else {
+        window.__opencodeBootstrapLogs = bootlogs
+      }
+    }
+  } catch (e) {}
+  function blog(m){
+    try {
+      bootlogs.push("[bootstrap] " + m)
+      if (bootlogs.length > 200) bootlogs.shift()
+    } catch(e){}
+    try { window.parent && window.parent.postMessage({type:"opencode-web.spa-log",msg:"[bootstrap] "+m},"*") } catch(e){}
+  }
   var p = location.pathname.split("/").filter(Boolean)[0]
   if (!p) { blog("no slug in path"); return }
   try {
@@ -429,6 +445,7 @@ export const BOOTSTRAP = `<script>
 	} catch (e) {
 	  ok = false
 	}
+	blog("insert-prompt execCommand=" + ok + " textNow=" + JSON.stringify((el.textContent || "").slice(0, 120)))
 	if (!ok) {
 	  range.deleteContents()
 	  var tn = document.createTextNode(insertText)
@@ -440,17 +457,22 @@ export const BOOTSTRAP = `<script>
 		sel.addRange(range)
 	  }
 	  dispatchInsertInput(el, insertText)
+	  blog("insert-prompt fallback-applied textNow=" + JSON.stringify((el.textContent || "").slice(0, 120)))
 	}
 	return true
   }
   function insertPromptText(text) {
+	blog("insert-prompt received len=" + text.length)
 	var target = findPromptTarget()
 	if (!target) {
 	  blog("insert-prompt target not found")
 	  return false
 	}
+	blog("insert-prompt target tag=" + target.tagName + " editable=" + !!target.isContentEditable)
 	if (target.isContentEditable) {
-	  return insertTextIntoContentEditable(target, text)
+	  var result = insertTextIntoContentEditable(target, text)
+	  blog("insert-prompt contenteditable result=" + result + " textNow=" + JSON.stringify((target.textContent || "").slice(0, 120)))
+	  return result
 	}
 	if ((target.tagName === "TEXTAREA" || target.tagName === "INPUT") && typeof target.value === "string") {
 	  var value = target.value
@@ -471,6 +493,7 @@ export const BOOTSTRAP = `<script>
 	  if (typeof target.focus === "function") target.focus()
 	  var cursor = before.length + prefix.length + text.length
 	  if (typeof target.setSelectionRange === "function") target.setSelectionRange(cursor, cursor)
+	  blog("insert-prompt input result=true valueNow=" + JSON.stringify((target.value || "").slice(0, 120)))
 	  return true
 	}
 	blog("insert-prompt target unsupported tag=" + target.tagName)
@@ -479,7 +502,10 @@ export const BOOTSTRAP = `<script>
   window.addEventListener("message", function(e) {
     if (e.data && e.data.type === "opencode-web.insert-prompt") {
       var text = typeof e.data.text === "string" ? e.data.text : ""
-      if (text) insertPromptText(text)
+      try { window.__opencodeLastInsertPrompt = text } catch (e) {}
+      var inserted = false
+      if (text) inserted = insertPromptText(text)
+      try { window.__opencodeLastInsertPromptResult = inserted } catch (e) {}
       return
     }
     if (e.data && e.data.type === "opencode-web.clipboard-text") {

@@ -373,14 +373,18 @@ export function setup(logger: Logger) {
 					const deadline = Date.now() + 10000;
 					while (Date.now() < deadline) {
 						const prompt = document.querySelector('[data-component="prompt-input"]');
-						if (prompt instanceof HTMLElement) {
-							return;
+						if (prompt instanceof HTMLElement && /\\/session(?:[/?#]|$)/.test(location.pathname)) {
+							await new Promise(resolve => setTimeout(resolve, 300));
+							return {
+								pathname: location.pathname,
+								promptText: (prompt.textContent || '').trim(),
+							};
 						}
 
 						await new Promise(resolve => setTimeout(resolve, 100));
 					}
 
-					throw new Error('prompt-input not found after 10s timeout');
+					throw new Error('prompt/session route not ready after 10s timeout; pathname=' + location.pathname);
 				})()
 			`);
 
@@ -393,8 +397,9 @@ export function setup(logger: Logger) {
 				dropPrevented?: boolean;
 				dragEnterPointerEvents?: string;
 				finalPointerEvents?: string;
+				bootstrapLogs?: Array<{ type: string; msg: string }>;
 			}>(`
-				(() => {
+				(async () => {
 					const iframe = document.querySelector(${JSON.stringify(opencodeIframeSelector)});
 					if (!(iframe instanceof HTMLIFrameElement)) {
 						return { ok: false, reason: 'iframe not found' };
@@ -451,6 +456,23 @@ export function setup(logger: Logger) {
 						}
 					}
 
+					const logBuffer = [];
+					const logListener = (event) => {
+						if (!event.data || typeof event.data.type !== 'string') {
+							return;
+						}
+
+						if (event.data.type === 'opencode-web.spa-log' || event.data.type === 'opencode-web.session-changed' || event.data.type === 'opencode-web.insert-prompt') {
+							const entry = {
+								type: event.data.type,
+								msg: String(event.data.msg ?? event.data.text ?? event.data.sessionId ?? ''),
+							};
+							logBuffer.push(entry);
+							console.log('[opencode-smoke][parent-message]', JSON.stringify(entry));
+						}
+					};
+					window.addEventListener('message', logListener);
+
 					const dragEnter = createDragEvent('dragenter', createDataTransfer());
 					window.dispatchEvent(dragEnter);
 					const dragEnterPointerEvents = iframe.style.pointerEvents;
@@ -458,6 +480,7 @@ export function setup(logger: Logger) {
 					const dragOver = createDragEvent('dragover', createDataTransfer());
 					container.dispatchEvent(dragOver);
 					if (!dragOver.defaultPrevented) {
+						window.removeEventListener('message', logListener);
 						return {
 							ok: false,
 							reason: 'drop handler not attached: dragover did not preventDefault',
@@ -465,11 +488,15 @@ export function setup(logger: Logger) {
 							containerClass: container.className,
 							dragEnterPointerEvents,
 							dragOverPrevented: dragOver.defaultPrevented,
+							bootstrapLogs: logBuffer,
 						};
 					}
 
 					const drop = createDragEvent('drop', createDataTransfer());
 					container.dispatchEvent(drop);
+					await new Promise(resolve => setTimeout(resolve, 300));
+					window.removeEventListener('message', logListener);
+					console.log('[opencode-smoke][dispatch-bootstrapLogs]', JSON.stringify(logBuffer));
 
 					return {
 						ok: true,
@@ -479,35 +506,72 @@ export function setup(logger: Logger) {
 						dropPrevented: drop.defaultPrevented,
 						dragEnterPointerEvents,
 						finalPointerEvents: iframe.style.pointerEvents,
+						bootstrapLogs: logBuffer,
 					};
 				})()
 			`);
-
 			assert.strictEqual(dispatch.ok, true, dispatch.reason ?? `drop dispatch failed: ${JSON.stringify(dispatch)}`);
 			assert.strictEqual(dispatch.dragEnterPointerEvents, 'none', `iframe pointer-events not disabled during dragenter: ${JSON.stringify(dispatch)}`);
 			assert.strictEqual(dispatch.dragOverPrevented, true, `dragover was not handled: ${JSON.stringify(dispatch)}`);
 			assert.strictEqual(dispatch.dropPrevented, true, `drop was not handled: ${JSON.stringify(dispatch)}`);
 			assert.strictEqual(dispatch.finalPointerEvents, '', `iframe pointer-events not reset after drop: ${JSON.stringify(dispatch)}`);
 
-			await app.code.driver.evaluateInFrame(opencodeIframeSelector, `
+			const promptState = await app.code.driver.evaluateInFrame<{
+				ok: boolean;
+				promptHtml: string;
+				promptText: string;
+				bootstrapLogs: string[];
+				lastInsertPrompt?: string;
+				lastInsertPromptResult?: boolean;
+				pathname: string;
+			}>(opencodeIframeSelector, `
 				(async () => {
 					const deadline = Date.now() + 5000;
-					let lastText = '';
+					let promptHtml = 'prompt missing';
+					let promptText = '';
+					let bootstrapLogs = [];
+					let lastInsertPrompt;
+					let lastInsertPromptResult;
 					while (Date.now() < deadline) {
 						const prompt = document.querySelector('[data-component="prompt-input"]');
+						promptHtml = prompt instanceof HTMLElement ? prompt.outerHTML.substring(0, 500) : 'prompt missing';
+						promptText = prompt instanceof HTMLElement ? (prompt.textContent || '').trim() : '';
+						bootstrapLogs = Array.isArray(window.__opencodeBootstrapLogs) ? window.__opencodeBootstrapLogs.slice(-20) : [];
+						lastInsertPrompt = typeof window.__opencodeLastInsertPrompt === 'string' ? window.__opencodeLastInsertPrompt : undefined;
+						lastInsertPromptResult = typeof window.__opencodeLastInsertPromptResult === 'boolean' ? window.__opencodeLastInsertPromptResult : undefined;
 						if (prompt instanceof HTMLElement) {
-							lastText = (prompt.textContent || '').trim();
-							if (lastText.includes(${JSON.stringify(expectedPrompt)})) {
-								return;
+							if (promptText.includes(${JSON.stringify(expectedPrompt)})) {
+								return {
+									ok: true,
+									promptHtml,
+									promptText,
+									bootstrapLogs,
+									lastInsertPrompt,
+									lastInsertPromptResult,
+									pathname: location.pathname,
+								};
 							}
 						}
 
 						await new Promise(resolve => setTimeout(resolve, 100));
 					}
 
-					throw new Error('path not in chat input after 5s timeout; expected ' + ${JSON.stringify(expectedPrompt)} + '; last text=' + JSON.stringify(lastText));
+					return {
+						ok: false,
+						promptHtml,
+						promptText,
+						bootstrapLogs,
+						lastInsertPrompt,
+						lastInsertPromptResult,
+						pathname: location.pathname,
+					};
 				})()
 			`);
+			assert.strictEqual(
+				promptState.ok,
+				true,
+				`path not in chat input after 5s timeout; expected ${expectedPrompt}; state=${JSON.stringify(promptState)}`,
+			);
 		});
 
 		it('SPA iframe is loopback-origin and global drop listener responds to text/plain', async function () {

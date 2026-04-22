@@ -526,18 +526,22 @@ export class OpencodeSidebarPane extends ViewPane {
 	}
 
 	private async handlePromptDrop(event: DragEvent): Promise<void> {
-		const text = await this.getDropPromptText(event);
+		const uriList = event.dataTransfer?.getData("text/uri-list") || undefined;
+		this.logTrace(`[OpenCode] Prompt drop snapshot types=${JSON.stringify(Array.from(event.dataTransfer?.types ?? []))} uriList=${JSON.stringify(uriList)}`);
+		const text = await this.getDropPromptText(event, uriList);
 		if (!text) {
+			this.logWarning(`[OpenCode] Prompt drop produced no text (snapshotUriList=${JSON.stringify(uriList)})`);
 			return;
 		}
 
+		this.logTrace(`[OpenCode] Prompt drop sending ${JSON.stringify(text)}`);
 		this.messageBridge.send({
 			type: "opencode-web.insert-prompt",
 			text,
 		} as IOpencodeMessage & { text: string });
 	}
 
-	private async getDropPromptText(event: DragEvent): Promise<string | undefined> {
+	private async getDropPromptText(event: DragEvent, uriListSnapshot?: string): Promise<string | undefined> {
 		const editors = await this.instantiationService.invokeFunction(accessor => extractEditorsAndFilesDropData(accessor, event));
 		const fromEditors = editors
 			.flatMap(editor => editor.resource ? [this.toPromptPath(editor.resource)] : [])
@@ -547,7 +551,7 @@ export class OpencodeSidebarPane extends ViewPane {
 			return [...new Set(fromEditors)].map(path => `@${path}`).join(" ");
 		}
 
-		const uriList = event.dataTransfer?.getData("text/uri-list");
+		const uriList = uriListSnapshot ?? event.dataTransfer?.getData("text/uri-list");
 		if (!uriList) {
 			return undefined;
 		}
@@ -771,6 +775,12 @@ export class OpencodeSidebarPane extends ViewPane {
 	private logWarning(message: string): void {
 		this.instantiationService.invokeFunction((accessor) => {
 			accessor.get(ILogService).warn(message);
+		});
+	}
+
+	private logTrace(message: string): void {
+		this.instantiationService.invokeFunction((accessor) => {
+			accessor.get(ILogService).trace(message);
 		});
 	}
 }
