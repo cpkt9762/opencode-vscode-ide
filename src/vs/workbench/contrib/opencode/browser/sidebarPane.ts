@@ -461,7 +461,7 @@ export class OpencodeSidebarPane extends ViewPane {
 		const updateDragState = (event: DragEvent) => {
 			this.setIframeDragInterception(
 				iframe,
-				this.isRelevantDrag(event.dataTransfer) && this.isEventInsideContainer(container, event),
+				this.isRelevantDrag(event.dataTransfer),
 			);
 		};
 
@@ -479,6 +479,9 @@ export class OpencodeSidebarPane extends ViewPane {
 			this.setIframeDragInterception(iframe, false);
 		}, true));
 		this._register(addDisposableListener(view, EventType.DROP, () => {
+			this.setIframeDragInterception(iframe, false);
+		}, true));
+		this._register(addDisposableListener(view, EventType.DRAG_END, () => {
 			this.setIframeDragInterception(iframe, false);
 		}, true));
 	}
@@ -501,19 +504,6 @@ export class OpencodeSidebarPane extends ViewPane {
 			type === CodeDataTransfers.FILES ||
 			type === CodeDataTransfers.EDITORS,
 		);
-	}
-
-	private isEventInsideContainer(container: HTMLElement, event: DragEvent): boolean {
-		if (event.target instanceof Node && container.contains(event.target)) {
-			return true;
-		}
-
-		if (event.clientX === 0 && event.clientY === 0) {
-			return false;
-		}
-
-		const rect = container.getBoundingClientRect();
-		return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
 	}
 
 	private setIframeDragInterception(iframe: HTMLIFrameElement, active: boolean): void {
