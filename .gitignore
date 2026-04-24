@@ -44,3 +44,6 @@ dist
 .github/prompts/*.local.prompt.md
 .agents/skills/.local/
 .github/skills/.local/
+
+# Compiled opencode binaries (build artifacts)
+resources/opencode-bin/opencode-*

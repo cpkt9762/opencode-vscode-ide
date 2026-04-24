@@ -144,6 +144,7 @@ import { IWebContentExtractorService } from '../../platform/webContentExtractor/
 import { NativeWebContentExtractorService } from '../../platform/webContentExtractor/electron-main/webContentExtractorService.js';
 import { AgentNetworkFilterService, IAgentNetworkFilterService } from '../../platform/networkFilter/common/networkFilterService.js';
 import ErrorTelemetry from '../../platform/telemetry/electron-main/errorTelemetry.js';
+import { HostBridgeService, IHostBridgeService } from '../../workbench/contrib/opencode/electron-main/hostBridge.js';
 import { IOpencodeServeManager, OpencodeServeManager } from '../../workbench/contrib/opencode/electron-main/opencodeServeManager.js';
 import { ISpaProxyService } from '../../workbench/contrib/opencode/electron-main/spaProxyService.js';
 import { SpaProxyService } from '../../workbench/contrib/opencode/electron-main/spaProxy.js';
@@ -678,6 +679,7 @@ export class CodeApplication extends Disposable {
 			getActiveWindowId: () => nativeHostMainService.getActiveWindowId(-1)
 		}));
 		const activeWindowRouter = new StaticRouter(ctx => activeWindowManager.getActiveClientId().then(id => ctx === id));
+		await accessor.get(IHostBridgeService).initialize(mainProcessElectronServer, activeWindowManager);
 		const urlHandlerRouter = new URLHandlerRouter(activeWindowRouter, this.logService);
 		const urlHandlerChannel = mainProcessElectronServer.getChannel('urlHandler', urlHandlerRouter);
 		urlService.registerHandler(new URLHandlerChannelClient(urlHandlerChannel));
@@ -1202,6 +1204,7 @@ export class CodeApplication extends Disposable {
 		services.set(ICSSDevelopmentService, new SyncDescriptor(CSSDevelopmentService, undefined, true));
 
 		// OpenCode
+		services.set(IHostBridgeService, new SyncDescriptor(HostBridgeService, undefined, true));
 		services.set(IOpencodeServeManager, new SyncDescriptor(OpencodeServeManager, undefined, true));
 		services.set(ISpaProxyService, new SyncDescriptor(SpaProxyService, undefined, true));
 

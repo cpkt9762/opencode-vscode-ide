@@ -1,0 +1,476 @@
+diff --git a/packages/opencode/src/tool/apply_patch.ts b/packages/opencode/src/tool/apply_patch.ts
+index 7da7dd255..0103b489d 100644
+--- a/packages/opencode/src/tool/apply_patch.ts
++++ b/packages/opencode/src/tool/apply_patch.ts
+@@ -1,19 +1,19 @@
+-import z from "zod"
+-import * as path from "path"
++import * as path from "node:path"
++import { AppFileSystem } from "@opencode-ai/shared/filesystem"
++import { createTwoFilesPatch, diffLines } from "diff"
+ import { Effect } from "effect"
+-import * as Tool from "./tool"
++import z from "zod"
+ import { Bus } from "../bus"
++import { File } from "../file"
+ import { FileWatcher } from "../file/watcher"
+-import { Instance } from "../project/instance"
+-import { Patch } from "../patch"
+-import { createTwoFilesPatch, diffLines } from "diff"
+-import { assertExternalDirectoryEffect } from "./external-directory"
+-import { trimDiff } from "./edit"
++import { Format } from "../format"
+ import { LSP } from "../lsp"
+-import { AppFileSystem } from "@opencode-ai/shared/filesystem"
++import { Patch } from "../patch"
++import { Instance } from "../project/instance"
+ import DESCRIPTION from "./apply_patch.txt"
+-import { File } from "../file"
+-import { Format } from "../format"
++import { trimDiff } from "./edit"
++import { assertExternalDirectoryEffect } from "./external-directory"
++import * as Tool from "./tool"
+ 
+ const PatchParams = z.object({
+   patchText: z.string().describe("The full patch text that describes all changes to be made"),
+@@ -91,7 +91,7 @@ export const ApplyPatchTool = Tool.define(
+               deletions,
+             })
+ 
+-            totalDiff += diff + "\n"
++            totalDiff += `${diff}\n`
+             break
+           }
+ 
+@@ -138,7 +138,7 @@ export const ApplyPatchTool = Tool.define(
+               deletions,
+             })
+ 
+-            totalDiff += diff + "\n"
++            totalDiff += `${diff}\n`
+             break
+           }
+ 
+@@ -168,7 +168,7 @@ export const ApplyPatchTool = Tool.define(
+               deletions,
+             })
+ 
+-            totalDiff += deleteDiff + "\n"
++            totalDiff += `${deleteDiff}\n`
+             break
+           }
+         }
+@@ -198,6 +198,34 @@ export const ApplyPatchTool = Tool.define(
+         },
+       })
+ 
++      if (process.env.OPENCODE_DIFF_BRIDGE_URL) {
++        const bridgeResult = yield* Effect.promise(async () => {
++          const { bridgePost } = await import("./diff-bridge-client")
++          try {
++            const bridgeFiles = fileChanges.map((change) => ({
++              filePath: change.filePath,
++              type: change.type,
++              newContent: change.newContent,
++              diff: change.diff,
++              movePath: change.movePath,
++            }))
++            await bridgePost("/apply-patch", { files: bridgeFiles })
++            const summaryLines = fileChanges.map((c) =>
++              c.type === "add"
++                ? `A ${path.relative(Instance.worktree, c.filePath)}`
++                : c.type === "delete"
++                  ? `D ${path.relative(Instance.worktree, c.filePath)}`
++                  : `M ${path.relative(Instance.worktree, c.movePath ?? c.filePath)}`,
++            )
++            const output = `Patch queued for review:\n${summaryLines.join("\n")}`
++            return { title: output, metadata: { diff: totalDiff, files, diagnostics: {} }, output }
++          } catch (error) {
++            console.error("[diff-bridge] fallthrough:", error)
++          }
++        })
++        if (bridgeResult) return bridgeResult
++      }
++
+       // Apply the changes
+       const updates: Array<{ file: string; event: "add" | "change" | "unlink" }> = []
+ 
+@@ -220,7 +248,7 @@ export const ApplyPatchTool = Tool.define(
+             if (change.movePath) {
+               // Create parent directories (recursive: true is safe on existing/root dirs)
+ 
+-              yield* afs.writeWithDirs(change.movePath!, change.newContent)
++              yield* afs.writeWithDirs(change.movePath, change.newContent)
+               yield* afs.remove(change.filePath)
+               updates.push({ file: change.filePath, event: "unlink" })
+               updates.push({ file: change.movePath, event: "add" })
+diff --git a/packages/opencode/src/tool/diff-bridge-client.ts b/packages/opencode/src/tool/diff-bridge-client.ts
+new file mode 100644
+index 000000000..d4e9b3335
+--- /dev/null
++++ b/packages/opencode/src/tool/diff-bridge-client.ts
+@@ -0,0 +1,38 @@
++const BRIDGE_TIMEOUT = 5000
++
++export function getBridgeUrl(): string | undefined {
++  return process.env.OPENCODE_DIFF_BRIDGE_URL
++}
++
++export async function bridgePost(path: string, body: unknown): Promise<unknown> {
++  const url = getBridgeUrl()
++  if (!url) throw new Error("OPENCODE_DIFF_BRIDGE_URL not set")
++  const controller = new AbortController()
++  const timeout = setTimeout(() => controller.abort(), BRIDGE_TIMEOUT)
++  try {
++    const response = await fetch(`${url}${path}`, {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify(body),
++      signal: controller.signal,
++    })
++    if (!response.ok) throw new Error(`Bridge ${path} returned ${response.status}`)
++    return response.json()
++  } finally {
++    clearTimeout(timeout)
++  }
++}
++
++export async function bridgeGet(path: string): Promise<unknown> {
++  const url = getBridgeUrl()
++  if (!url) throw new Error("OPENCODE_DIFF_BRIDGE_URL not set")
++  const controller = new AbortController()
++  const timeout = setTimeout(() => controller.abort(), BRIDGE_TIMEOUT)
++  try {
++    const response = await fetch(`${url}${path}`, { signal: controller.signal })
++    if (!response.ok) throw new Error(`Bridge ${path} returned ${response.status}`)
++    return response.json()
++  } finally {
++    clearTimeout(timeout)
++  }
++}
+diff --git a/packages/opencode/src/tool/edit.ts b/packages/opencode/src/tool/edit.ts
+index f535183d4..1c642a6ea 100644
+--- a/packages/opencode/src/tool/edit.ts
++++ b/packages/opencode/src/tool/edit.ts
+@@ -3,21 +3,21 @@
+ // https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/utils/editCorrector.ts
+ // https://github.com/cline/cline/blob/main/evals/diff-edits/diff-apply/diff-06-26-25.ts
+ 
+-import z from "zod"
+-import * as path from "path"
+-import { Effect } from "effect"
+-import * as Tool from "./tool"
+-import { LSP } from "../lsp"
++import * as path from "node:path"
++import { AppFileSystem } from "@opencode-ai/shared/filesystem"
+ import { createTwoFilesPatch, diffLines } from "diff"
+-import DESCRIPTION from "./edit.txt"
++import { Effect } from "effect"
++import z from "zod"
++import type { Snapshot } from "@/snapshot"
++import { Bus } from "../bus"
+ import { File } from "../file"
+ import { FileWatcher } from "../file/watcher"
+-import { Bus } from "../bus"
+ import { Format } from "../format"
++import { LSP } from "../lsp"
+ import { Instance } from "../project/instance"
+-import { Snapshot } from "@/snapshot"
++import DESCRIPTION from "./edit.txt"
+ import { assertExternalDirectoryEffect } from "./external-directory"
+-import { AppFileSystem } from "@opencode-ai/shared/filesystem"
++import * as Tool from "./tool"
+ 
+ function normalizeLineEndings(text: string): string {
+   return text.replaceAll("\r\n", "\n")
+@@ -68,7 +68,7 @@ export const EditTool = Tool.define(
+           let diff = ""
+           let contentOld = ""
+           let contentNew = ""
+-          yield* Effect.gen(function* () {
++          const bridgeResult = yield* Effect.gen(function* () {
+             if (params.oldString === "") {
+               const existed = yield* afs.existsSafe(filePath)
+               contentNew = params.newString
+@@ -82,6 +82,26 @@ export const EditTool = Tool.define(
+                   diff,
+                 },
+               })
++              if (process.env.OPENCODE_DIFF_BRIDGE_URL) {
++                const bridgeResult = yield* Effect.promise(async () => {
++                  const { bridgePost } = await import("./diff-bridge-client")
++                  try {
++                    await bridgePost("/apply-edit", {
++                      filePath,
++                      newContent: params.newString,
++                      edits: [{ originalStartLine: 1, originalEndLine: 0, modifiedText: params.newString }],
++                    })
++                    return {
++                      title: diff,
++                      output: "Edit queued for review",
++                      metadata: { filepath: filePath, diff },
++                    }
++                  } catch (error) {
++                    console.error("[diff-bridge] fallthrough:", error)
++                  }
++                })
++                if (bridgeResult) return bridgeResult
++              }
+               yield* afs.writeWithDirs(filePath, params.newString)
+               yield* format.file(filePath)
+               yield* bus.publish(File.Event.Edited, { file: filePath })
+@@ -121,6 +141,22 @@ export const EditTool = Tool.define(
+               },
+             })
+ 
++            if (process.env.OPENCODE_DIFF_BRIDGE_URL) {
++              const bridgeResult = yield* Effect.promise(async () => {
++                const { bridgePost } = await import("./diff-bridge-client")
++                try {
++                  await bridgePost("/apply-edit", { filePath, newContent: contentNew, edits: [] })
++                  return {
++                    title: diff,
++                    output: "Edit queued for review",
++                    metadata: { filepath: filePath, diff },
++                  }
++                } catch (error) {
++                  console.error("[diff-bridge] fallthrough:", error)
++                }
++              })
++              if (bridgeResult) return bridgeResult
++            }
+             yield* afs.writeWithDirs(filePath, contentNew)
+             yield* format.file(filePath)
+             yield* bus.publish(File.Event.Edited, { file: filePath })
+@@ -138,6 +174,26 @@ export const EditTool = Tool.define(
+               ),
+             )
+           }).pipe(Effect.orDie)
++          if (bridgeResult) {
++            const filediff: Snapshot.FileDiff = {
++              file: filePath,
++              patch: diff,
++              additions: 0,
++              deletions: 0,
++            }
++            for (const change of diffLines(contentOld, contentNew)) {
++              if (change.added) filediff.additions += change.count || 0
++              if (change.removed) filediff.deletions += change.count || 0
++            }
++            return {
++              ...bridgeResult,
++              metadata: {
++                ...bridgeResult.metadata,
++                diagnostics: {},
++                filediff,
++              },
++            }
++          }
+ 
+           const filediff: Snapshot.FileDiff = {
+             file: filePath,
+@@ -167,6 +223,7 @@ export const EditTool = Tool.define(
+ 
+           return {
+             metadata: {
++              filepath: filePath,
+               diagnostics,
+               diff,
+               filediff,
+@@ -293,7 +350,7 @@ export const BlockAnchorReplacer: Replacer = function* (content, find) {
+     const actualBlockSize = endLine - startLine + 1
+ 
+     let similarity = 0
+-    let linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2) // Middle lines only
++    const linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2) // Middle lines only
+ 
+     if (linesToCheck > 0) {
+       for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
+@@ -342,7 +399,7 @@ export const BlockAnchorReplacer: Replacer = function* (content, find) {
+     const actualBlockSize = endLine - startLine + 1
+ 
+     let similarity = 0
+-    let linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2) // Middle lines only
++    const linesToCheck = Math.min(searchBlockSize - 2, actualBlockSize - 2) // Middle lines only
+ 
+     if (linesToCheck > 0) {
+       for (let j = 1; j < searchBlockSize - 1 && j < actualBlockSize - 1; j++) {
+diff --git a/packages/opencode/src/tool/read.ts b/packages/opencode/src/tool/read.ts
+index c9b304862..7e9d14b1c 100644
+--- a/packages/opencode/src/tool/read.ts
++++ b/packages/opencode/src/tool/read.ts
+@@ -1,16 +1,16 @@
+-import z from "zod"
+-import { Effect, Option, Scope } from "effect"
+-import { createReadStream } from "fs"
+-import * as path from "path"
+-import { createInterface } from "readline"
+-import * as Tool from "./tool"
++import { createReadStream } from "node:fs"
++import * as path from "node:path"
++import { createInterface } from "node:readline"
+ import { AppFileSystem } from "@opencode-ai/shared/filesystem"
++import { Effect, Option, Scope } from "effect"
++import z from "zod"
++import { isImageAttachment, isPdfAttachment, sniffAttachmentMime } from "@/util/media"
+ import { LSP } from "../lsp"
+-import DESCRIPTION from "./read.txt"
+ import { Instance } from "../project/instance"
+-import { assertExternalDirectoryEffect } from "./external-directory"
+ import { Instruction } from "../session/instruction"
+-import { isImageAttachment, isPdfAttachment, sniffAttachmentMime } from "@/util/media"
++import { assertExternalDirectoryEffect } from "./external-directory"
++import DESCRIPTION from "./read.txt"
++import * as Tool from "./tool"
+ 
+ const DEFAULT_READ_LIMIT = 2000
+ const MAX_LINE_LENGTH = 2000
+@@ -63,11 +63,11 @@ export const ReadTool = Tool.define(
+       return yield* Effect.forEach(
+         items,
+         Effect.fnUntraced(function* (item) {
+-          if (item.type === "directory") return item.name + "/"
++          if (item.type === "directory") return `${item.name}/`
+           if (item.type !== "symlink") return item.name
+ 
+           const target = yield* fs.stat(path.join(filepath, item.name)).pipe(Effect.catch(() => Effect.void))
+-          if (target?.type === "Directory") return item.name + "/"
++          if (target?.type === "Directory") return `${item.name}/`
+           return item.name
+         }),
+         { concurrency: "unbounded" },
+@@ -162,7 +162,7 @@ export const ReadTool = Tool.define(
+       )
+ 
+       yield* assertExternalDirectoryEffect(ctx, filepath, {
+-        bypass: Boolean(ctx.extra?.["bypassCwdCheck"]),
++        bypass: Boolean(ctx.extra?.bypassCwdCheck),
+         kind: stat?.type === "Directory" ? "directory" : "file",
+       })
+ 
+@@ -203,6 +203,39 @@ export const ReadTool = Tool.define(
+         }
+       }
+ 
++      if (process.env.OPENCODE_DIFF_BRIDGE_URL) {
++        const bridgeResult = yield* Effect.promise(async () => {
++          const { bridgeGet } = await import("./diff-bridge-client")
++          try {
++            const result = (await bridgeGet(`/read-buffer?path=${encodeURIComponent(filepath)}`)) as {
++              dirty: boolean
++              content?: string
++            }
++            if (result.dirty && result.content !== undefined) {
++              const lines = result.content.split("\n")
++              const offset = params.offset ?? 1
++              const limit = params.limit ?? 2000
++              const sliced = lines.slice(offset - 1, offset - 1 + limit)
++              let output = [`<path>${filepath}</path>`, `<type>file</type>`, "<content>\n"].join("\n")
++              output += sliced.map((line, i) => `${i + offset}: ${line}`).join("\n")
++              output += `\n\n(End of file - total ${lines.length} lines)\n</content>`
++              return {
++                title: filepath,
++                output,
++                metadata: {
++                  preview: sliced.slice(0, 20).join("\n"),
++                  truncated: false,
++                  loaded: [],
++                },
++              }
++            }
++          } catch (error) {
++            console.error("[diff-bridge] read fallthrough:", error)
++          }
++        })
++        if (bridgeResult) return bridgeResult
++      }
++
+       const loaded = yield* instruction.resolve(ctx.messages, filepath, ctx.messageID)
+       const sample = yield* readSample(filepath, Number(stat.size), SAMPLE_BYTES)
+ 
+@@ -233,7 +266,10 @@ export const ReadTool = Tool.define(
+       }
+ 
+       const file = yield* Effect.promise(() =>
+-        lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset ?? 1 }),
++        lines(filepath, {
++          limit: params.limit ?? DEFAULT_READ_LIMIT,
++          offset: params.offset ?? 1,
++        }),
+       )
+       if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
+         return yield* Effect.fail(
+diff --git a/packages/opencode/src/tool/write.ts b/packages/opencode/src/tool/write.ts
+index 741091b21..391df9a9b 100644
+--- a/packages/opencode/src/tool/write.ts
++++ b/packages/opencode/src/tool/write.ts
+@@ -1,18 +1,18 @@
+-import z from "zod"
+-import * as path from "path"
+-import { Effect } from "effect"
+-import * as Tool from "./tool"
+-import { LSP } from "../lsp"
++import * as path from "node:path"
++import { AppFileSystem } from "@opencode-ai/shared/filesystem"
+ import { createTwoFilesPatch } from "diff"
+-import DESCRIPTION from "./write.txt"
++import { Effect } from "effect"
++import z from "zod"
+ import { Bus } from "../bus"
+ import { File } from "../file"
+ import { FileWatcher } from "../file/watcher"
+ import { Format } from "../format"
+-import { AppFileSystem } from "@opencode-ai/shared/filesystem"
++import { LSP } from "../lsp"
+ import { Instance } from "../project/instance"
+ import { trimDiff } from "./edit"
+ import { assertExternalDirectoryEffect } from "./external-directory"
++import * as Tool from "./tool"
++import DESCRIPTION from "./write.txt"
+ 
+ const MAX_PROJECT_DIAGNOSTICS_FILES = 5
+ 
+@@ -51,6 +51,35 @@ export const WriteTool = Tool.define(
+             },
+           })
+ 
++          if (process.env.OPENCODE_DIFF_BRIDGE_URL) {
++            const bridgeResult = yield* Effect.promise(async () => {
++              const { bridgePost } = await import("./diff-bridge-client")
++              try {
++                await bridgePost("/apply-write", {
++                  filePath: filepath,
++                  newContent: params.content,
++                })
++                return {
++                  title: diff,
++                  output: "Write queued for review",
++                  metadata: { filepath, diff },
++                }
++              } catch (error) {
++                console.error("[diff-bridge] fallthrough:", error)
++              }
++            })
++            if (bridgeResult) {
++              return {
++                ...bridgeResult,
++                metadata: {
++                  ...bridgeResult.metadata,
++                  diagnostics: {},
++                  exists,
++                },
++              }
++            }
++          }
++
+           yield* fs.writeWithDirs(filepath, params.content)
+           yield* format.file(filepath)
+           yield* bus.publish(File.Event.Edited, { file: filepath })
+@@ -81,6 +110,7 @@ export const WriteTool = Tool.define(
+             title: path.relative(Instance.worktree, filepath),
+             metadata: {
+               diagnostics,
++              diff,
+               filepath,
+               exists: exists,
+             },

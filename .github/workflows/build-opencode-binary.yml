@@ -1,0 +1,42 @@
+name: Build Opencode Binary
+
+on:
+  push:
+    branches: [feat/cursor-diff, main-fork]
+    paths:
+      - 'patches/**'
+      - 'scripts/build-opencode-binary.sh'
+  pull_request:
+    paths:
+      - 'patches/**'
+      - 'scripts/build-opencode-binary.sh'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            platform: darwin
+            arch: arm64
+          - os: macos-13
+            platform: darwin
+            arch: x64
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Build opencode binary
+        run: |
+          OPENCODE_BUILD_PLATFORM=${{ matrix.platform }} \
+          OPENCODE_BUILD_ARCH=${{ matrix.arch }} \
+          npm run build-opencode
+      - name: Verify binary exists
+        run: ls -la resources/opencode-bin/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencode-${{ matrix.platform }}-${{ matrix.arch }}
+          path: resources/opencode-bin/opencode-*

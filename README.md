@@ -113,3 +113,12 @@ This project has adopted the [Microsoft Open Source Code of Conduct](https://ope
 Copyright (c) Microsoft Corporation. All rights reserved.
 
 Licensed under the [MIT](LICENSE.txt) license.
+
+## Diff Preview (Cursor-style Inline Review)
+
+Agent-driven edits appear as inline diff zones in the editor instead of writing directly to disk.
+
+- **Accept All / Reject All**: Via Command Palette (`Cmd+Shift+P` → "OpenCode: Accept All Pending Edits" / "Reject All")
+- **Opt-in**: Active when fork spawns `opencode serve` with `OPENCODE_DIFF_BRIDGE_URL` (automatic in IDE)
+- **Embedded binary**: Ships bundled patched opencode binary (~80 MB) in `.app/Contents/Resources/opencode-bin/`. System `opencode` is ignored.
+- **QA runbook**: See [docs/cursor-diff-qa-runbook.md](docs/cursor-diff-qa-runbook.md)

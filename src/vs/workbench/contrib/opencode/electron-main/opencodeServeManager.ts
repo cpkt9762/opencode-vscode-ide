@@ -20,6 +20,7 @@ import {
 } from "../../../../platform/instantiation/common/extensions.js";
 import { createDecorator } from "../../../../platform/instantiation/common/instantiation.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
+import { IHostBridgeService } from "./hostBridge.js";
 
 const STARTUP_TIMEOUT = 15_000;
 const HEALTH_TIMEOUT = 2_000;
@@ -81,6 +82,7 @@ export class OpencodeServeManager
 	constructor(
 		private readonly configurationService: IConfigurationService,
 		private readonly logService: ILogService,
+		private readonly hostBridgeService: IHostBridgeService,
 	) {
 		super();
 
@@ -183,6 +185,18 @@ export class OpencodeServeManager
 		const env = { ...process.env };
 		delete env.OPENCODE_SERVER_PASSWORD;
 		env.OPENCODE_SERVER_PASSWORD = this.password;
+		try {
+			const bridgePort = this.hostBridgeService.getPort();
+			env.OPENCODE_DIFF_BRIDGE_URL = `http://127.0.0.1:${bridgePort}`;
+			this.logService.info(
+				"[opencode] injecting OPENCODE_DIFF_BRIDGE_URL",
+				env.OPENCODE_DIFF_BRIDGE_URL,
+			);
+		} catch {
+			this.logService.info(
+				"[opencode] hostBridge not ready, skipping OPENCODE_DIFF_BRIDGE_URL",
+			);
+		}
 		const proc = spawn(
 			binaryPath,
 			[
@@ -441,6 +455,11 @@ export class OpencodeServeManager
 	}
 
 	private findBinaryPath(): string | undefined {
+		const embeddedBinary = this.findEmbeddedBinary();
+		if (embeddedBinary) {
+			return embeddedBinary;
+		}
+
 		const configuredPath = this.getBinaryPath();
 		if (configuredPath) {
 			const resolvedPath = this.resolveConfiguredBinaryPath(configuredPath);
@@ -466,6 +485,37 @@ export class OpencodeServeManager
 					return candidatePath;
 				}
 			}
+		}
+
+		return undefined;
+	}
+
+	private findEmbeddedBinary(): string | undefined {
+		const binaryName = `opencode-${process.platform}-${process.arch}${
+			process.platform === "win32" ? ".exe" : ""
+		}`;
+
+		// Packaged app: process.resourcesPath points to .app/Contents/Resources/
+		if (process.resourcesPath) {
+			const packagedPath = join(
+				process.resourcesPath,
+				"opencode-bin",
+				binaryName,
+			);
+			if (existsSync(packagedPath) && this.isExecutable(packagedPath)) {
+				this.logService.info("[opencode] using embedded binary", packagedPath);
+				return packagedPath;
+			}
+		}
+
+		// Dev mode: check resources/opencode-bin/ relative to cwd
+		const devPath = join(process.cwd(), "resources", "opencode-bin", binaryName);
+		if (existsSync(devPath) && this.isExecutable(devPath)) {
+			this.logService.info(
+				"[opencode] using dev-mode embedded binary",
+				devPath,
+			);
+			return devPath;
 		}
 
 		return undefined;
@@ -630,6 +680,7 @@ function isHealthResponse(value: unknown): value is { healthy: true } {
 
 IConfigurationService(OpencodeServeManager, "", 0);
 ILogService(OpencodeServeManager, "", 1);
+IHostBridgeService(OpencodeServeManager, "", 2);
 
 registerSingleton(
 	IOpencodeServeManager,

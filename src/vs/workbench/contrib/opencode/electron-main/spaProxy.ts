@@ -9,6 +9,7 @@ import { extname, join } from 'node:path';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IOpencodeServeManager } from './opencodeServeManager.js';
+import { stablePort } from './portUtils.js';
 import { ISpaProxyService } from './spaProxyService.js';
 
 const BACKEND_UNAVAILABLE = 'backend unavailable';
@@ -646,17 +647,6 @@ export function decodeWorkspaceDir(pathname: string) {
 	return Buffer.from(normalized + '='.repeat(padding), 'base64').toString('utf8');
 }
 
-export function stablePort(backend: string) {
-	let hash = 0x811c9dc5;
-
-	for (let index = 0; index < backend.length; index++) {
-		hash ^= backend.charCodeAt(index);
-		hash = Math.imul(hash, 0x01000193) >>> 0;
-	}
-
-	return 49152 + (hash % 16384);
-}
-
 export function inject(html: string) {
 	return html.replace('<head>', `<head>${BOOTSTRAP}`);
 }
@@ -952,5 +942,7 @@ export class SpaProxyService implements ISpaProxyService {
 
 ILogService(SpaProxyService, '', 0);
 IOpencodeServeManager(SpaProxyService, '', 1);
+
+export { stablePort };
 
 registerSingleton(ISpaProxyService, SpaProxyService, InstantiationType.Eager);

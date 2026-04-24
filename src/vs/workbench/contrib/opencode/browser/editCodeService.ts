@@ -197,9 +197,11 @@ export class EditCodeService extends Disposable implements IEditCodeService {
 		super.dispose();
 	}
 
-	createDiffZone(editorId: string, edits: readonly DiffEdit[], options?: { status?: 'streaming' | 'pending' }): string {
+	createDiffZone(editorId: string, edits: readonly DiffEdit[], options?: { status?: 'streaming' | 'pending'; replaceExisting?: boolean }): string {
 		const id = `diffzone-${this.idCounter++}`;
-		this.disposeZonesForEditor(editorId);
+		if (options?.replaceExisting !== false) {
+			this.disposeZonesForEditor(editorId);
+		}
 		const entry = this.createEntry(id, editorId, edits, options?.status ?? 'pending');
 		this.zones.set(id, entry);
 		this.renderEntry(entry);

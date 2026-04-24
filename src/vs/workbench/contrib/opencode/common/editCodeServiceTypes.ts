@@ -29,7 +29,7 @@ export interface IDiffZoneWidget {
 
 export interface IEditCodeService {
 	readonly _serviceBrand: undefined;
-	createDiffZone(editorId: string, edits: readonly DiffEdit[], options?: { status?: ActiveDiffZoneStatus }): string;
+	createDiffZone(editorId: string, edits: readonly DiffEdit[], options?: { status?: ActiveDiffZoneStatus; replaceExisting?: boolean }): string;
 	updateDiffZone(zoneId: string, edits: readonly DiffEdit[], options?: { status?: ActiveDiffZoneStatus }): void;
 	acceptDiffZone(zoneId: string): void;
 	rejectDiffZone(zoneId: string): void;
