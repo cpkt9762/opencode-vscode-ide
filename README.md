@@ -1,115 +1,152 @@
-# Visual Studio Code - Open Source ("Code - OSS")
-[![Feature Requests](https://img.shields.io/github/issues/microsoft/vscode/feature-request.svg)](https://github.com/microsoft/vscode/issues?q=is%3Aopen+is%3Aissue+label%3Afeature-request+sort%3Areactions-%2B1-desc)
-[![Bugs](https://img.shields.io/github/issues/microsoft/vscode/bug.svg)](https://github.com/microsoft/vscode/issues?utf8=✓&q=is%3Aissue+is%3Aopen+label%3Abug)
-[![Gitter](https://img.shields.io/badge/chat-on%20gitter-yellow.svg)](https://gitter.im/Microsoft/vscode)
+# OpenCode IDE — VS Code fork with native OpenCode agent sidebar
 
-## The Repository
+> A desktop IDE built on a Microsoft VS Code fork, with the [OpenCode](https://opencode.ai) AI coding agent embedded as a first-class, native sidebar chat experience — not a web extension, not a webview bolt-on, but a vendored SPA served through an in-process proxy in the Electron main.
 
-This repository ("`Code - OSS`") is where we (Microsoft) develop the [Visual Studio Code](https://code.visualstudio.com) product together with the community. Not only do we work on code and issues here, we also publish our [roadmap](https://github.com/microsoft/vscode/wiki/Roadmap), [monthly iteration plans](https://github.com/microsoft/vscode/wiki/Iteration-Plans), and our [endgame plans](https://github.com/microsoft/vscode/wiki/Running-the-Endgame). This source code is available to everyone under the standard [MIT license](https://github.com/microsoft/vscode/blob/main/LICENSE.txt).
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.txt)
+[![Built on VS Code](https://img.shields.io/badge/built%20on-VS%20Code-007ACC?logo=visualstudiocode)](https://github.com/microsoft/vscode)
+[![Electron](https://img.shields.io/badge/electron-39.x-47848F?logo=electron)](https://www.electronjs.org/)
+[![OpenCode](https://img.shields.io/badge/agent-OpenCode-black)](https://opencode.ai)
 
-## Visual Studio Code
+![OpenCode IDE — native sidebar agent in a VS Code fork](docs/images/opencode-ide.png)
 
-<p align="center">
-  <img alt="VS Code in action" src="https://user-images.githubusercontent.com/35271042/118224532-3842c400-b438-11eb-923d-a5f66fa6785a.png">
-</p>
+---
 
-[Visual Studio Code](https://code.visualstudio.com) is a distribution of the `Code - OSS` repository with Microsoft-specific customizations released under a traditional [Microsoft product license](https://code.visualstudio.com/License/).
+## Why another VS Code fork?
 
-[Visual Studio Code](https://code.visualstudio.com) combines the simplicity of a code editor with what developers need for their core edit-build-debug cycle. It provides comprehensive code editing, navigation, and understanding support along with lightweight debugging, a rich extensibility model, and lightweight integration with existing tools.
+Most "AI IDE" forks (Cursor, Windsurf, Trae, Void, …) glue an AI chat panel in via a webview or embedded extension. That works, but it leaks: weird CSP rules, broken file drops, session loss on reload, no real control over auth, process lifecycle, or ports.
 
-Visual Studio Code is updated monthly with new features and bug fixes. You can download it for Windows, macOS, and Linux on [Visual Studio Code's website](https://code.visualstudio.com/Download). To get the latest releases every day, install the [Insiders build](https://code.visualstudio.com/insiders).
+**OpenCode IDE** takes the opposite approach:
+
+- The entire OpenCode chat UI (`packages/app` from the main opencode repo) is **vendored** into the fork as a static SPA.
+- An **Electron-main-side loopback HTTP proxy** (`ISpaProxyService`) serves that SPA and transparently proxies every API call to a locally managed `opencode serve` backend.
+- The workbench sidebar shows a tiny iframe pointing at `http://127.0.0.1:<stable_port>/<base64_workspace>` — so the agent UI gets its own real origin, full CSP isolation, and stable session state across reloads.
+- An **`IOpencodeServeManager`** handles `opencode serve` child-process lifecycle (spawn, health probe, port recovery, HTTP Basic auth injection for opencode ≥ 1.14.19, clean shutdown).
+
+The result is a fork where the AI agent behaves like a native VS Code panel: drag-and-drop files from the explorer into the chat, keep your session on window reloads, run the backend on any port you configure, and ship everything as a single desktop app.
+
+---
+
+## Features
+
+- **Native OpenCode sidebar** — the opencode SPA loaded as a real iframe from a loopback origin, with full file-drop integration from the VS Code explorer.
+- **Managed `opencode serve` backend** — auto-start / auto-respawn / port pinning / HTTP Basic auth, all from the Electron main process.
+- **Proposed `opencodeEditor` VS Code API** — a scaffolded proposed API surface (`src/vs/workbench/api/`) so extensions can interact with the agent host.
+- **Smoke-tested drop flow** — Playwright-based sidebar file-drop smoke tests (`test/smoke`) covering real runtime behavior, not just unit stubs.
+- **Fork-friendly build** — a dedicated `Makefile` wraps the VS Code gulp build, SPA vendoring, smoke suite, and dev launch commands.
+- **Clean separation from upstream** — fork-only code lives under `src/vs/workbench/contrib/opencode/` and a few well-scoped integration points; everything else stays close to upstream VS Code so rebasing on Microsoft's `main` stays cheap.
+
+---
+
+## Architecture at a glance
+
+OpenCode's chat UI runs as a vendored SPA loaded into the workbench via a loopback HTTP proxy.
+
+### Process model
+
+- **Main process** (`src/vs/code/electron-main/app.ts`)
+  - `ISpaProxyService` — HTTP server that serves the vendored SPA and proxies API calls to the backend.
+  - `IOpencodeServeManager` — manages the `opencode serve` child-process lifecycle.
+  - `ISpaProxyService` is exposed to the renderer via the IPC channel `opencodeSpaProxy`.
+
+- **Renderer process** (electron-browser)
+  - `registerMainProcessRemoteService(ISpaProxyService, 'opencodeSpaProxy')` creates the IPC proxy.
+  - `sidebarPane.ts` computes the iframe URL: `http://127.0.0.1:<stable_port>/<base64_workspace>`.
+
+### Rebuilding the vendored SPA
+
+```bash
+# 1. Build the SPA in the main opencode repo
+cd ../packages/app
+bun run build
+
+# 2. Copy the built dist/ into the fork's vendored directory
+cp -r dist/ <fork>/src/vs/workbench/contrib/opencode/media/spa/
+
+# 3. Recompile the fork
+cd <fork>
+make compile        # or: npm run compile
+```
+
+Or, from inside this repo, a single `make vendor-spa` does all three when the main opencode repo is a sibling directory.
+
+### User-facing settings
+
+| Setting | Type | Default | Purpose |
+|---|---|---|---|
+| `opencode.autoStart` | boolean | `true` | Auto-start `opencode serve` on window open |
+| `opencode.port` | number | `4096` | Backend port |
+| `opencode.binaryPath` | string | `""` | Override the opencode binary path |
+
+---
+
+## Build and run
+
+Prerequisites are the same as upstream VS Code: Node.js 22.x (see `.nvmrc`), Python, native build tools. The main opencode repo should be cloned as a sibling directory if you want to rebuild the SPA.
+
+```bash
+# install deps
+make install-deps
+
+# one-shot full build
+make compile
+
+# watch-mode dev loop
+make watch
+
+# launch the dev build
+make run
+
+# smoke tests (full suite)
+make smoke
+# smoke tests filtered to OpenCode integration
+make smoke-opencode
+```
+
+See `Makefile` for every available target.
+
+### Getting the opencode backend binary
+
+The `opencode serve` binary is **not** checked into git — it's a ~96 MB native binary that doesn't belong in a source repo. Place your platform binary at `resources/opencode-bin/opencode-<platform>-<arch>` (for example `resources/opencode-bin/opencode-darwin-arm64`), or point `opencode.binaryPath` at an existing installation.
+
+---
+
+## Relationship to upstream VS Code
+
+This repository is a fork of [microsoft/vscode](https://github.com/microsoft/vscode) at a pinned commit. Upstream is tracked as the `upstream` remote; fork work lives on the `main-fork` branch. The fork keeps:
+
+- a distinct product identity (`product.json` → `nameShort: OpenCode`, `applicationName: opencode-ide`, `urlProtocol: opencode`),
+- a dedicated contribution area at `src/vs/workbench/contrib/opencode/` for all fork-only feature code,
+- a proposed `opencodeEditor` API surface,
+- build-script additions to ship the vendored SPA inside the desktop bundle.
+
+Everything else is stock VS Code OSS, MIT-licensed.
+
+---
+
+## Keywords
+
+*These are here so automated code search, AI coding agents, and engineers looking for specific implementations can actually find this project.*
+
+`opencode` · `opencode ide` · `opencode vscode` · `opencode vscode fork` · `opencode-vscode-ide` · `opencode desktop` · `opencode electron` · `opencode sidebar` · `opencode native integration` · `opencode serve manager` · `opencode SPA proxy` · `opencode AI agent` · `opencode coding agent` · `opencode.ai` · `vscode fork ai agent` · `vscode ai coding agent` · `vscode fork with embedded agent` · `electron loopback proxy iframe` · `vscode contrib opencode` · `opencodeEditor proposed api` · `ai coding ide` · `open source ai ide` · `claude code alternative` · `cursor alternative` · `windsurf alternative` · `void alternative` · `trae alternative` · `opencode IDE native sidebar` · `vscode fork opencode integration` · `vscode electron main proxy` · `spa proxy service vscode` · `opencode ISpaProxyService` · `opencode IOpencodeServeManager` · `opencode ide build from source`
+
+### SEO description (copy for GitHub "About")
+
+> OpenCode IDE — a Microsoft VS Code fork with the OpenCode AI coding agent embedded natively as a sidebar SPA via an Electron-main loopback proxy. Open source alternative to Cursor / Windsurf / Claude Code Desktop.
+
+---
 
 ## Contributing
 
-There are many ways in which you can participate in this project, for example:
+Fork work lives on `main-fork`. Please keep commits scoped and prefixed (`feat(opencode):`, `fix(opencode):`, `test(opencode):`, `docs(opencode):`, `build:`). When touching the VS Code core, try to keep the diff minimal and rebase-friendly; new integration code should land under `src/vs/workbench/contrib/opencode/` or behind clearly scoped hooks.
 
-* [Submit bugs and feature requests](https://github.com/microsoft/vscode/issues), and help us verify as they are checked in
-* Review [source code changes](https://github.com/microsoft/vscode/pulls)
-* Review the [documentation](https://github.com/microsoft/vscode-docs) and make pull requests for anything from typos to additional and new content
+For upstream VS Code contribution guidelines, see [the upstream CONTRIBUTING guide](https://github.com/microsoft/vscode/blob/main/CONTRIBUTING.md).
 
-If you are interested in fixing issues and contributing directly to the code base,
-please see the document [How to Contribute](https://github.com/microsoft/vscode/wiki/How-to-Contribute), which covers the following:
-
-* [How to build and run from source](https://github.com/microsoft/vscode/wiki/How-to-Contribute)
-* [The development workflow, including debugging and running tests](https://github.com/microsoft/vscode/wiki/How-to-Contribute#debugging)
-* [Coding guidelines](https://github.com/microsoft/vscode/wiki/Coding-Guidelines)
-* [Submitting pull requests](https://github.com/microsoft/vscode/wiki/How-to-Contribute#pull-requests)
-* [Finding an issue to work on](https://github.com/microsoft/vscode/wiki/How-to-Contribute#where-to-contribute)
-* [Contributing to translations](https://aka.ms/vscodeloc)
-
-## Feedback
-
-* Ask a question on [Stack Overflow](https://stackoverflow.com/questions/tagged/vscode)
-* [Request a new feature](CONTRIBUTING.md)
-* Upvote [popular feature requests](https://github.com/microsoft/vscode/issues?q=is%3Aopen+is%3Aissue+label%3Afeature-request+sort%3Areactions-%2B1-desc)
-* [File an issue](https://github.com/microsoft/vscode/issues)
-* Connect with the extension author community on [GitHub Discussions](https://github.com/microsoft/vscode-discussions/discussions) or [Slack](https://aka.ms/vscode-dev-community)
-* Follow [@code](https://x.com/code) and let us know what you think!
-
-See our [wiki](https://github.com/microsoft/vscode/wiki/Feedback-Channels) for a description of each of these channels and information on some other available community-driven channels.
-
-## OpenCode Architecture
-
-OpenCode's chat UI runs as a vendored SPA (`packages/app` from the main opencode repo)
-loaded into the workbench via a loopback HTTP proxy.
-
-### Process Model
-
-- **Main process** (electron-main, `src/vs/code/electron-main/app.ts`):
-  - `ISpaProxyService` — HTTP server that serves vendored SPA + proxies API calls to backend
-  - `IOpencodeServeManager` — Manages `opencode serve` child process lifecycle
-  - `ISpaProxyService` exposed to renderer via IPC channel `opencodeSpaProxy`
-
-- **Renderer process** (electron-browser):
-  - `registerMainProcessRemoteService(ISpaProxyService, 'opencodeSpaProxy')` creates the IPC proxy
-  - `sidebarPane.ts` computes iframe URL: `http://127.0.0.1:<stable_port>/<base64_workspace>`
-
-### Rebuilding the SPA
-
-    # 1. Build SPA in the main opencode repo
-    cd ../packages/app
-    bun run build
-
-    # 2. Copy to fork's vendored directory
-    cp -r dist/ <fork>/src/vs/workbench/contrib/opencode/media/spa/
-
-    # 3. Rebuild the fork
-    cd <fork>
-    npm run compile
-
-### Configuration
-
-User settings:
-
-- `opencode.autoStart` (boolean, default `true`): Auto-start `opencode serve`
-- `opencode.port` (number, default `4096`): Backend port
-- `opencode.binaryPath` (string, default ``): Override opencode binary path
-
-## Related Projects
-
-Many of the core components and extensions to VS Code live in their own repositories on GitHub. For example, the [node debug adapter](https://github.com/microsoft/vscode-node-debug) and the [mono debug adapter](https://github.com/microsoft/vscode-mono-debug) repositories are separate from each other. For a complete list, please visit the [Related Projects](https://github.com/microsoft/vscode/wiki/Related-Projects) page on our [wiki](https://github.com/microsoft/vscode/wiki).
-
-## Bundled Extensions
-
-VS Code includes a set of built-in extensions located in the [extensions](extensions) folder, including grammars and snippets for many languages. Extensions that provide rich language support (inline suggestions, Go to Definition) for a language have the suffix `language-features`. For example, the `json` extension provides coloring for `JSON` and the `json-language-features` extension provides rich language support for `JSON`.
-
-## Development Container
-
-This repository includes a Visual Studio Code Dev Containers / GitHub Codespaces development container.
-
-* For [Dev Containers](https://aka.ms/vscode-remote/download/containers), use the **Dev Containers: Clone Repository in Container Volume...** command which creates a Docker volume for better disk I/O on macOS and Windows.
-  * If you already have VS Code and Docker installed, you can also click [here](https://vscode.dev/redirect?url=vscode://ms-vscode-remote.remote-containers/cloneInVolume?url=https://github.com/microsoft/vscode) to get started. This will cause VS Code to automatically install the Dev Containers extension if needed, clone the source code into a container volume, and spin up a dev container for use.
-
-* For Codespaces, install the [GitHub Codespaces](https://marketplace.visualstudio.com/items?itemName=GitHub.codespaces) extension in VS Code, and use the **Codespaces: Create New Codespace** command.
-
-Docker / the Codespace should have at least **4 Cores and 6 GB of RAM (8 GB recommended)** to run a full build. See the [development container README](.devcontainer/README.md) for more information.
-
-## Code of Conduct
-
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/). For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+---
 
 ## License
 
-Copyright (c) Microsoft Corporation. All rights reserved.
+Fork code: MIT (`LICENSE.txt`), inherited from [microsoft/vscode](https://github.com/microsoft/vscode).
 
-Licensed under the [MIT](LICENSE.txt) license.
+OpenCode is a separate project by [opencode.ai](https://opencode.ai); its SPA bundle is vendored here under its own license. See [opencode.ai/docs](https://opencode.ai/docs) and the [OpenCode GitHub org](https://github.com/anomalyco/opencode) for the canonical source.
+
+This project is **not** built, endorsed, or sponsored by Microsoft, by the OpenCode team, or by Anthropic.
