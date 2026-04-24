@@ -542,7 +542,7 @@ export class OpencodeServeManager
 			configuredPort > 0 &&
 			configuredPort <= 65_535
 			? configuredPort
-			: 4096;
+			: 5888;
 	}
 
 	private getBinaryPath(): string | undefined {
