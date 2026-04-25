@@ -193,6 +193,13 @@ jobs:
         continue-on-error: true
         if: always()
 
+      - name: 🧰 Install opencode CLI
+        if: ${{ inputs.electron_tests }}
+        shell: bash
+        run: |
+          bun install -g opencode-ai
+          opencode --version
+
       - name: 🧪 Run smoke tests (Electron)
         if: ${{ inputs.electron_tests }}
         timeout-minutes: 20
