@@ -421,11 +421,11 @@ suite('OpencodeServeManager / health checks', () => {
 		assert.strictEqual(await internals(manager).isHealthy(`http://127.0.0.1:${backend.port}`, undefined), true);
 	});
 
-	test('isHealthy returns true on HTTP 401 (auth required = server alive)', async () => {
+	test('isHealthy returns false on HTTP 401 (auth required but wrong credentials)', async () => {
 		backend = await mockBackend({ status: 401 });
 		manager = new TestableOpencodeServeManager(configuration(), new NullLogService());
 
-		assert.strictEqual(await internals(manager).isHealthy(`http://127.0.0.1:${backend.port}`, undefined), true);
+		assert.strictEqual(await internals(manager).isHealthy(`http://127.0.0.1:${backend.port}`, undefined), false);
 	});
 
 	test('isHealthy returns false on HTTP 500', async () => {

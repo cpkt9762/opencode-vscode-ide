@@ -394,7 +394,7 @@ export class OpencodeServeManager
 	): Promise<boolean> {
 		try {
 			const response = await this.readHealth(url, password);
-			return response.statusCode === 401 || isHealthResponse(response.body);
+			return isHealthResponse(response.body);
 		} catch {
 			return false;
 		}
