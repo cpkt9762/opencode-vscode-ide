@@ -148,6 +148,12 @@ class TestableOpencodeServeManager extends OpencodeServeManager {
 
 		return this.nextProcess as unknown as ChildProcess;
 	}
+	protected override async killStaleServer(_port: number): Promise<void> {
+		// No-op in tests: real lsof/netstat lookup would find the mock HTTP backend in this process.
+	}
+	protected override async findProcessOnPort(_port: number): Promise<number | undefined> {
+		return undefined;
+	}
 	get testState() { return this._testState; }
 	get testWeStarted() { return this._testWeStarted; }
 }
@@ -263,7 +269,7 @@ suite('OpencodeServeManager / lifecycle', () => {
 
 		assert.strictEqual(url, `http://127.0.0.1:${backend.port}`);
 		assert.strictEqual(manager.spawnCalls.length, 1);
-		assert.deepStrictEqual(manager.spawnCalls[0].args, ['serve', '--hostname', '127.0.0.1', '--port', String(backend.port), '--print-logs']);
+		assert.deepStrictEqual(manager.spawnCalls[0].args, ['serve', '--hostname', '127.0.0.1', '--port', String(backend.port)]);
 		assert.strictEqual(manager.spawnCalls[0].options.env?.OPENCODE_SERVER_PASSWORD, manager.getPassword());
 		assert.deepStrictEqual(manager.spawnCalls[0].options.stdio, ['ignore', 'pipe', 'pipe']);
 		assert.strictEqual(spawn.calls.length, 0);
