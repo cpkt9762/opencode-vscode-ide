@@ -2,13 +2,20 @@
  *  Copyright (c) pingzi. Licensed under the Apache License, Version 2.0.
  *--------------------------------------------------------------------------------------------*/
 
-import { type ChildProcess, execSync, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { accessSync, constants, existsSync } from "node:fs";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
-import { homedir, platform } from "node:os";
-import { join } from "node:path";
+// biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
+import { type ChildProcess, type SpawnOptions, execSync, spawn } from "child_process";
+// biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
+import { randomBytes } from "crypto";
+// biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
+import { accessSync, constants, existsSync } from "fs";
+// biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
+import { request as httpRequest } from "http";
+// biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
+import { request as httpsRequest } from "https";
+// biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
+import { homedir, platform } from "os";
+// biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
+import { join } from "path";
 import {
 	Disposable,
 	type IDisposable,
@@ -76,6 +83,14 @@ export class OpencodeServeManager
 
 	getPassword(): string | undefined {
 		return this.password;
+	}
+
+	protected get _testWeStarted(): boolean {
+		return this.weStarted;
+	}
+
+	protected get _testState(): OpencodeProcessState {
+		return this.state;
 	}
 
 	constructor(
@@ -151,6 +166,14 @@ export class OpencodeServeManager
 		super.dispose();
 	}
 
+	protected spawnProcess(
+		command: string,
+		args: readonly string[],
+		options: SpawnOptions,
+	): ChildProcess {
+		return spawn(command, args, options);
+	}
+
 	private async doStart(): Promise<string> {
 		this.clearRespawnTimer();
 		this.stopRequested = false;
@@ -183,7 +206,7 @@ export class OpencodeServeManager
 		const env = { ...process.env };
 		delete env.OPENCODE_SERVER_PASSWORD;
 		env.OPENCODE_SERVER_PASSWORD = this.password;
-		const proc = spawn(
+		const proc = this.spawnProcess(
 			binaryPath,
 			[
 				"serve",

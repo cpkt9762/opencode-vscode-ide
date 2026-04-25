@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import type { Application, Logger } from '../../../../automation';
 import { ActivityBarPosition } from '../../../../automation';
 import { installAllHandlers } from '../../utils';
+import { isOpencodeServeHealthy, waitForOpencodeServe } from './opencode-test-helpers';
 
 type OpencodeMessage = {
 	type: string;
@@ -21,19 +22,8 @@ const opencodeViewZoneSelector = '.monaco-editor .view-zones [data-opencode-widg
 const opencodeOverlaySelector = '[data-opencode-widget-id="opencode-sample.overlay"]';
 const opencodeContentSelector = '[data-opencode-widget-id="opencode-sample.content"]';
 const opencodeIframeSelector = '.part.sidebar iframe, .part.auxiliarybar iframe';
-const opencodeServeHealthUrl = 'http://127.0.0.1:4096/global/health';
-const opencodeInstallHint = 'Install it with `npm i -g opencode-ai` or configure `opencode.binaryPath`.';
 
 let opencodeServeProcess: ReturnType<typeof spawn> | undefined;
-
-async function isOpencodeServeHealthy(): Promise<boolean> {
-	try {
-		const response = await fetch(opencodeServeHealthUrl);
-		return response.ok || response.status === 401;
-	} catch {
-		return false;
-	}
-}
 
 async function openAppJs(app: Application): Promise<void> {
 	await app.workbench.quickaccess.openFile(join(app.workspacePathOrFolder, 'app.js'));
@@ -134,54 +124,6 @@ async function getActiveEditorCompositeId(app: Application): Promise<string> {
 	`);
 }
 
-async function waitForOpencodeServe(getOutput: () => string): Promise<void> {
-	const childProcess = opencodeServeProcess;
-	if (!childProcess) {
-		throw new Error('opencode serve process was not created');
-	}
-
-	await new Promise<void>((resolve, reject) => {
-		const start = Date.now();
-		const withOutput = (message: string) => new Error(`${message}${getOutput() ? `\n${getOutput()}` : ''}`);
-		const finish = (error?: Error) => {
-			childProcess.off('error', onError);
-			childProcess.off('exit', onExit);
-			if (error) {
-				reject(error);
-				return;
-			}
-			resolve();
-		};
-		const onError = (error: Error) => finish(withOutput(`Failed to start opencode serve: ${error.message}. ${opencodeInstallHint}`));
-		const onExit = () => {
-			void check();
-		};
-		const check = async (): Promise<void> => {
-			try {
-				if (await isOpencodeServeHealthy()) {
-					finish();
-					return;
-				}
-			} catch {
-				// wait and retry
-			}
-
-			if (Date.now() - start > 30000) {
-				finish(withOutput('opencode serve did not start within 30s'));
-				return;
-			}
-
-			setTimeout(() => {
-				void check();
-			}, 500);
-		};
-
-		childProcess.once('error', onError);
-		childProcess.once('exit', onExit);
-		void check();
-	});
-}
-
 export function setup(logger: Logger) {
 	describe('OpenCode Smoke', () => {
 		installAllHandlers(logger);
@@ -191,7 +133,7 @@ export function setup(logger: Logger) {
 		before(async function () {
 			this.timeout(30000);
 			opencodeServeOutput = '';
-			if (await isOpencodeServeHealthy()) {
+			if (await isOpencodeServeHealthy(4096)) {
 				return;
 			}
 
@@ -205,7 +147,7 @@ export function setup(logger: Logger) {
 				opencodeServeOutput += chunk.toString();
 			});
 
-			await waitForOpencodeServe(() => opencodeServeOutput);
+			await waitForOpencodeServe(() => opencodeServeOutput, 4096);
 		});
 
 		after(async function () {

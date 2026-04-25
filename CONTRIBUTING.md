@@ -4,6 +4,51 @@ Welcome, and thank you for your interest in contributing to VS Code!
 
 There are several ways in which you can contribute, beyond writing code. The goal of this document is to provide a high-level overview of how you can get involved.
 
+## Running Tests
+
+### Unit Tests
+
+OpenCode-specific unit tests live under `src/vs/workbench/contrib/opencode/test/`. They run inside an Electron renderer via the `./scripts/test.sh` runner.
+
+Run all OpenCode unit tests:
+
+```bash
+./scripts/test.sh --grep "OpencodeServeManager"
+```
+
+Run a single test file:
+
+```bash
+./scripts/test.sh --run src/vs/workbench/contrib/opencode/test/electron-main/opencodeServeManager.test.ts
+```
+
+**Note:** The Node-based unit runner (`npm run test-node`) silently excludes `**/electron-main/**/*.test.js` files (see `test/unit/node/index.js`). Use `./scripts/test.sh` for OpenCode tests.
+
+### Smoke Tests
+
+OpenCode smoke tests live under `test/smoke/src/areas/opencode/`. They require the `opencode` CLI on PATH:
+
+```bash
+bun install -g opencode-ai
+```
+
+Run all opencode smoke tests:
+
+```bash
+npm run smoketest-no-compile -- --tracing -g "OpenCode"
+```
+
+### Known Limitations
+
+The current `OpencodeServeManager` test coverage explicitly defers the following (tracked in `.sisyphus/plans/`):
+
+* **No `killPort()` fallback.** If port 5888 is held by a non-`opencode-serve` process, the manager fails to start instead of attempting to free the port. (Web extension version has this; fork version does not.)
+* **No pre-spawn port probe.** The manager attempts to spawn before checking port availability.
+* **No respawn back-off.** Crashed-server respawn is a fixed 1-second delay with no upper bound on retry count.
+* **No multi-window smoke test.** The smoke automation framework `Application` class wraps a single `Code` instance; testing two windows in one fork process is not currently supported. The unit test `concurrent start() calls return the same promise` validates the deduplication that protects the multi-window-same-process scenario.
+* **Pre-existing baseline test issue.** `src/vs/workbench/contrib/opencode/test/electron-main/spaProxy.test.ts` imports the `vm` Node module which is not supported in Electron's renderer process; that file's tests do not run on the current renderer. New tests use `--run <path>` to scope around this.
+* **Smoke test `externally-spawned (adopted) opencode serve does NOT trigger respawn` is currently `.skip`ped.** The adoption-launch flow (pre-spawn external `opencode serve` + `app.start()` of a fresh Electron window that adopts it) hangs beyond the 120-second Mocha test budget on the current fork smoke harness. The corresponding adoption semantics are covered by the unit test `crash with weStarted=false does not trigger respawn (orphan adoption)` in `opencodeServeManager.test.ts`.
+
 ## Asking Questions
 
 

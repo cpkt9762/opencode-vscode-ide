@@ -226,6 +226,17 @@ jobs:
         shell: pwsh
         run: npm run gulp compile-extension-media
 
+      - name: 🧰 Install opencode CLI
+        if: ${{ inputs.electron_tests }}
+        shell: pwsh
+        run: |
+          if (Get-Command bun -ErrorAction SilentlyContinue) {
+            bun install -g opencode-ai
+          } else {
+            npm install -g opencode-ai
+          }
+          opencode --version
+
       - name: 🧪 Run smoke tests (Electron)
         if: ${{ inputs.electron_tests }}
         timeout-minutes: 20
