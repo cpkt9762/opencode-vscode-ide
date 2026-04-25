@@ -74,7 +74,7 @@ Or, from inside this repo, a single `make vendor-spa` does all three when the ma
 | Setting | Type | Default | Purpose |
 |---|---|---|---|
 | `opencode.autoStart` | boolean | `true` | Auto-start `opencode serve` on window open |
-| `opencode.port` | number | `4096` | Backend port |
+| `opencode.port` | number | `5888` | Backend port |
 | `opencode.binaryPath` | string | `""` | Override the opencode binary path |
 
 ---
