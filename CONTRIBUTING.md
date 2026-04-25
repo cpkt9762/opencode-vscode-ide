@@ -47,6 +47,7 @@ The current `OpencodeServeManager` test coverage explicitly defers the following
 * **No respawn back-off.** Crashed-server respawn is a fixed 1-second delay with no upper bound on retry count.
 * **No multi-window smoke test.** The smoke automation framework `Application` class wraps a single `Code` instance; testing two windows in one fork process is not currently supported. The unit test `concurrent start() calls return the same promise` validates the deduplication that protects the multi-window-same-process scenario.
 * **Pre-existing baseline test issue.** `src/vs/workbench/contrib/opencode/test/electron-main/spaProxy.test.ts` imports the `vm` Node module which is not supported in Electron's renderer process; that file's tests do not run on the current renderer. New tests use `--run <path>` to scope around this.
+* **Smoke test `externally-spawned (adopted) opencode serve does NOT trigger respawn` is currently `.skip`ped.** The adoption-launch flow (pre-spawn external `opencode serve` + `app.start()` of a fresh Electron window that adopts it) hangs beyond the 120-second Mocha test budget on the current fork smoke harness. The corresponding adoption semantics are covered by the unit test `crash with weStarted=false does not trigger respawn (orphan adoption)` in `opencodeServeManager.test.ts`.
 
 ## Asking Questions
 
