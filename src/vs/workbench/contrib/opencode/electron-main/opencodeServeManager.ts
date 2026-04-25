@@ -182,6 +182,7 @@ export class OpencodeServeManager
 			this.password ??
 			randomBytes(16).toString("hex");
 
+		const port = this.getPort();
 		const backendUrl = this.getConfiguredBackendUrl();
 		if (await this.isHealthy(backendUrl, this.password)) {
 			this.state = "running";
@@ -194,6 +195,8 @@ export class OpencodeServeManager
 			return backendUrl;
 		}
 
+		await this.killStaleServer(port);
+
 		const binaryPath = this.findBinaryPath();
 		if (!binaryPath) {
 			throw new Error(
@@ -201,7 +204,6 @@ export class OpencodeServeManager
 			);
 		}
 
-		const port = this.getPort();
 		const deadline = Date.now() + STARTUP_TIMEOUT;
 		const env = { ...process.env };
 		delete env.OPENCODE_SERVER_PASSWORD;
@@ -214,7 +216,6 @@ export class OpencodeServeManager
 				"127.0.0.1",
 				"--port",
 				String(port),
-				"--print-logs",
 			],
 			{
 				env,
@@ -393,7 +394,7 @@ export class OpencodeServeManager
 	): Promise<boolean> {
 		try {
 			const response = await this.readHealth(url, password);
-			return response.statusCode === 401 || isHealthResponse(response.body);
+			return isHealthResponse(response.body);
 		} catch {
 			return false;
 		}
@@ -492,6 +493,73 @@ export class OpencodeServeManager
 		}
 
 		return undefined;
+	}
+
+	protected async killStaleServer(port: number): Promise<void> {
+		const url = `http://127.0.0.1:${port}/`;
+
+		try {
+			if (await this.isHealthy(url, this.password)) {
+				return;
+			}
+		} catch {
+			// Treat any error as not healthy.
+		}
+
+		const pid = await this.findProcessOnPort(port);
+		if (pid === undefined) {
+			return;
+		}
+
+		this.logService.warn("[opencode] killing stale process holding port", {
+			pid,
+			port,
+		});
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch (error) {
+			this.logService.warn("[opencode] failed to kill stale process", {
+				pid,
+				error,
+			});
+			return;
+		}
+
+		await this.sleep(500);
+	}
+
+	protected async findProcessOnPort(port: number): Promise<number | undefined> {
+		if (platform() === "win32") {
+			try {
+				const output = execSync("netstat -ano -p tcp", { encoding: "utf8" });
+				const re = new RegExp(
+					`\\s127\\.0\\.0\\.1:${port}\\s+\\S+\\s+LISTENING\\s+(\\d+)$`,
+				);
+				for (const line of output.split(/\r?\n/)) {
+					const match = re.exec(line);
+					if (match) {
+						return Number(match[1]);
+					}
+				}
+				return undefined;
+			} catch {
+				return undefined;
+			}
+		}
+
+		try {
+			const output = execSync(`lsof -t -iTCP:${port} -sTCP:LISTEN`, {
+				encoding: "utf8",
+			}).trim();
+			if (!output) {
+				return undefined;
+			}
+
+			const pid = Number(output.split(/\r?\n/)[0]);
+			return Number.isFinite(pid) ? pid : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	private resolveConfiguredBinaryPath(
