@@ -1,0 +1,359 @@
+name: Release
+
+# Triggered by:
+#   - Pushing a tag matching v*.*.* (e.g. `git tag v0.1.0 && git push --tags`)
+#   - Manual dispatch from the Actions UI (with optional dry_run)
+#
+# Outputs (uploaded to a draft GitHub Release for human review before publish):
+#   - opencode-ide-<version>-darwin-arm64.dmg
+#   - opencode-ide-<version>-darwin-x64.dmg
+#   - opencode-ide-<version>-linux-x64.deb
+#   - opencode-ide-<version>-linux-x64.rpm
+#   - opencode-ide-<version>-windows-x64.exe
+#
+# These are UNSIGNED builds. End users on macOS will need to right-click -> Open
+# on first launch; Windows users will see a SmartScreen warning ("More info" ->
+# "Run anyway"). To switch to signed releases, add Apple Developer / Windows
+# code-signing secrets and wire them in the build-macos / build-windows jobs.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Override version (e.g. v0.1.0). Empty = derive from ref or timestamp.'
+        required: false
+        type: string
+      dry_run:
+        description: 'Build artifacts but skip GitHub Release creation'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  # Don't run two releases against the same ref in parallel, but never cancel
+  # an in-flight release (build is too expensive to throw away).
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: --max-old-space-size=8192
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+  VSCODE_QUALITY: 'oss'
+
+jobs:
+  prepare:
+    name: Prepare release metadata
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      version_no_v: ${{ steps.meta.outputs.version_no_v }}
+      is_dry_run: ${{ steps.meta.outputs.is_dry_run }}
+    steps:
+      - name: Compute version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="v0.0.0-dev.$(date -u +%Y%m%d%H%M%S)"
+          fi
+          echo "version=${VERSION}" | tee -a "${GITHUB_OUTPUT}"
+          echo "version_no_v=${VERSION#v}" | tee -a "${GITHUB_OUTPUT}"
+          echo "is_dry_run=${{ github.event.inputs.dry_run || 'false' }}" | tee -a "${GITHUB_OUTPUT}"
+
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          set -e
+          for i in 1 2 3; do
+            npm install && break
+            if [ "$i" = "3" ]; then
+              echo "npm install failed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "npm install failed (attempt $i), retrying..."
+            sleep 10
+          done
+
+      - name: Download builtin extensions
+        run: npm run download-builtin-extensions
+
+      - name: Build minified VS Code (darwin-${{ matrix.arch }})
+        run: npm run gulp -- vscode-darwin-${{ matrix.arch }}-min
+
+      - name: Sanity-check build output
+        run: |
+          set -euo pipefail
+          APP_PATH="../VSCode-darwin-${{ matrix.arch }}/OpenCode IDE.app"
+          if [ ! -d "${APP_PATH}" ]; then
+            echo "ERROR: ${APP_PATH} not produced" >&2
+            exit 1
+          fi
+          echo "Built: ${APP_PATH} ($(du -sh "${APP_PATH}" | cut -f1))"
+
+      - name: Create DMG
+        run: |
+          set -euo pipefail
+          V="${{ needs.prepare.outputs.version_no_v }}"
+          APP_PATH="../VSCode-darwin-${{ matrix.arch }}/OpenCode IDE.app"
+          DMG_NAME="opencode-ide-${V}-darwin-${{ matrix.arch }}.dmg"
+          mkdir -p artifacts
+          STAGING="$(mktemp -d)/dmg-staging"
+          mkdir -p "${STAGING}"
+          cp -R "${APP_PATH}" "${STAGING}/"
+          ln -s /Applications "${STAGING}/Applications"
+          hdiutil create \
+            -volname "OpenCode IDE" \
+            -srcfolder "${STAGING}" \
+            -ov -format UDZO \
+            "artifacts/${DMG_NAME}"
+          ls -la artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: artifacts/*.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  build-linux:
+    name: Build Linux x64
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libx11-dev libx11-xcb-dev libxkbfile-dev \
+            libnotify-bin libkrb5-dev libsecret-1-dev libnss3-dev \
+            fakeroot rpm
+
+      - name: Install dependencies
+        run: |
+          set -e
+          for i in 1 2 3; do
+            npm install && break
+            if [ "$i" = "3" ]; then
+              echo "npm install failed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "npm install failed (attempt $i), retrying..."
+            sleep 10
+          done
+
+      - name: Download builtin extensions
+        run: npm run download-builtin-extensions
+
+      - name: Build minified VS Code (linux-x64)
+        run: npm run gulp -- vscode-linux-x64-min
+
+      - name: Sanity-check build output
+        run: |
+          set -euo pipefail
+          if [ ! -d ../VSCode-linux-x64 ]; then
+            echo "ERROR: ../VSCode-linux-x64 not produced" >&2
+            exit 1
+          fi
+          echo "Built: ../VSCode-linux-x64 ($(du -sh ../VSCode-linux-x64 | cut -f1))"
+
+      - name: Build .deb package
+        run: |
+          npm run gulp -- vscode-linux-x64-prepare-deb
+          npm run gulp -- vscode-linux-x64-build-deb
+
+      - name: Build .rpm package
+        run: |
+          npm run gulp -- vscode-linux-x64-prepare-rpm
+          npm run gulp -- vscode-linux-x64-build-rpm
+
+      - name: Collect & rename artifacts
+        run: |
+          set -euo pipefail
+          V="${{ needs.prepare.outputs.version_no_v }}"
+          mkdir -p artifacts
+          DEB="$(find .build/linux/deb/amd64/deb -maxdepth 1 -type f -name '*.deb' 2>/dev/null | head -1 || true)"
+          RPM="$(find .build/linux/rpm/x86_64 -maxdepth 1 -type f -name '*.rpm' 2>/dev/null | head -1 || true)"
+          if [ -z "${DEB}" ]; then echo "ERROR: no .deb produced under .build/linux/deb/amd64/deb/" >&2; ls -la .build/linux/deb/amd64/ || true; exit 1; fi
+          if [ -z "${RPM}" ]; then echo "ERROR: no .rpm produced under .build/linux/rpm/x86_64/" >&2; ls -la .build/linux/rpm/ || true; exit 1; fi
+          cp "${DEB}" "artifacts/opencode-ide-${V}-linux-x64.deb"
+          cp "${RPM}" "artifacts/opencode-ide-${V}-linux-x64.rpm"
+          ls -la artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+
+  build-windows:
+    name: Build Windows x64
+    needs: prepare
+    runs-on: windows-2022
+    timeout-minutes: 150
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          for ($i = 1; $i -le 3; $i++) {
+            npm install
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($i -eq 3) {
+              Write-Error "npm install failed after 3 attempts"
+              exit 1
+            }
+            Write-Host "npm install failed (attempt $i), retrying..."
+            Start-Sleep -Seconds 10
+          }
+
+      - name: Download builtin extensions
+        run: npm run download-builtin-extensions
+
+      - name: Build minified VS Code (win32-x64)
+        run: npm run gulp -- vscode-win32-x64-min
+
+      - name: Build inno-updater
+        run: npm run gulp -- vscode-win32-x64-inno-updater
+
+      - name: Build system-wide setup (.exe)
+        run: npm run gulp -- vscode-win32-x64-system-setup
+
+      - name: Collect & rename artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $V = "${{ needs.prepare.outputs.version_no_v }}"
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $exe = Get-ChildItem -Path ".build\win32-x64\system-setup\*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "No .exe produced under .build\win32-x64\system-setup"
+            Get-ChildItem -Path ".build\win32-x64" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName
+            exit 1
+          }
+          Copy-Item $exe.FullName "artifacts\opencode-ide-$V-windows-x64.exe"
+          Get-ChildItem artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release (draft)
+    needs: [prepare, build-macos, build-linux, build-windows]
+    if: needs.prepare.outputs.is_dry_run != 'true'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.version }}
+          name: OpenCode IDE ${{ needs.prepare.outputs.version }}
+          files: artifacts/*
+          generate_release_notes: true
+          draft: true
+          prerelease: ${{ contains(needs.prepare.outputs.version, '-') }}
+          fail_on_unmatched_files: true
+          body: |
+            ## OpenCode IDE ${{ needs.prepare.outputs.version }}
+
+            VS Code fork with the [OpenCode](https://opencode.ai) AI coding agent embedded as a native sidebar.
+
+            ### Downloads
+
+            | Platform | File |
+            |---|---|
+            | macOS Apple Silicon | `opencode-ide-${{ needs.prepare.outputs.version_no_v }}-darwin-arm64.dmg` |
+            | macOS Intel | `opencode-ide-${{ needs.prepare.outputs.version_no_v }}-darwin-x64.dmg` |
+            | Linux x64 (Debian/Ubuntu) | `opencode-ide-${{ needs.prepare.outputs.version_no_v }}-linux-x64.deb` |
+            | Linux x64 (Fedora/RHEL) | `opencode-ide-${{ needs.prepare.outputs.version_no_v }}-linux-x64.rpm` |
+            | Windows x64 | `opencode-ide-${{ needs.prepare.outputs.version_no_v }}-windows-x64.exe` |
+
+            > **Unsigned builds** — these binaries are not code-signed.
+            > - **macOS**: first launch shows a Gatekeeper warning. Right-click the `.app` → **Open** to bypass, or run `xattr -cr "/Applications/OpenCode IDE.app"` to clear the quarantine attribute.
+            > - **Windows**: SmartScreen will warn on first run. Click **More info** → **Run anyway**.
+            > - **Linux**: install with `sudo dpkg -i opencode-ide-*.deb` or `sudo rpm -i opencode-ide-*.rpm`.
+
+            ---
+
+            *Built from [microsoft/vscode](https://github.com/microsoft/vscode) — see `package.json` for the upstream VS Code base version. Not affiliated with Microsoft, OpenCode, or Anthropic.*
