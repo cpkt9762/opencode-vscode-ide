@@ -146,7 +146,7 @@ jobs:
             "artifacts/${DMG_NAME}"
           ls -la artifacts/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.arch }}
           path: artifacts/*.dmg
@@ -233,7 +233,7 @@ jobs:
           cp "${RPM}" "artifacts/opencode-ide-${V}-linux-x64.rpm"
           ls -la artifacts/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-x64
           path: artifacts/*
@@ -302,7 +302,7 @@ jobs:
           Copy-Item $exe.FullName "artifacts\opencode-ide-$V-windows-x64.exe"
           Get-ChildItem artifacts
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-x64
           path: artifacts/*
