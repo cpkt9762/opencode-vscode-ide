@@ -210,6 +210,25 @@ jobs:
           fi
           echo "Built: ../VSCode-linux-x64 ($(du -sh ../VSCode-linux-x64 | cut -f1))"
 
+      # Linux deb/rpm packaging requires bin/code-tunnel-oss (the Rust CLI) to
+      # exist for dpkg-shlibdeps dependency calculation. The VS Code gulp tasks
+      # do not auto-build the CLI, so we build it explicitly here.
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build Rust CLI (code-tunnel-oss)
+        run: |
+          set -euo pipefail
+          cd cli
+          cargo build --release --target x86_64-unknown-linux-gnu
+          cd ..
+          mkdir -p ../VSCode-linux-x64/bin
+          cp "cli/target/x86_64-unknown-linux-gnu/release/code" "../VSCode-linux-x64/bin/code-tunnel-oss"
+          chmod +x "../VSCode-linux-x64/bin/code-tunnel-oss"
+          ls -la ../VSCode-linux-x64/bin/
+
       - name: Build .deb package
         run: |
           npm run gulp -- vscode-linux-x64-prepare-deb
@@ -274,6 +293,28 @@ jobs:
             Write-Host "npm install failed (attempt $i), retrying..."
             Start-Sleep -Seconds 10
           }
+
+      # patchWin32DependenciesTask in build/gulpfile.vscode.ts globs **/*.node
+      # without platform filtering, so cross-platform prebuilds (darwin/linux)
+      # in @github/copilot/sdk/prebuilds/ make rcedit.exe crash. Strip them
+      # before building so only Windows .node files reach rcedit.
+      - name: Strip non-Windows native prebuilds
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $patterns = @('darwin-*', 'linux-*', 'android-*', 'freebsd-*', 'openbsd-*')
+          $removed = 0
+          Get-ChildItem -Path 'node_modules' -Directory -Filter 'prebuilds' -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-ChildItem -Path $_.FullName -Directory -ErrorAction SilentlyContinue | Where-Object {
+              $name = $_.Name
+              ($patterns | ForEach-Object { $name -like $_ }) -contains $true
+            } | ForEach-Object {
+              Write-Host "Removing $($_.FullName)"
+              Remove-Item -Recurse -Force $_.FullName
+              $script:removed++
+            }
+          }
+          Write-Host "Stripped $removed non-Windows prebuild directories"
 
       - name: Download builtin extensions
         run: npm run download-builtin-extensions
