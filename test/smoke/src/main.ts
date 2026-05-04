@@ -9,29 +9,32 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscodetest from '@vscode/test-electron';
 import { gracefulify } from 'graceful-fs';
-import minimist = require('minimist');
-import fetch from 'node-fetch';
-import { ConsoleLogger, FileLogger, getBuildElectronPath, getBuildVersion, getDevElectronPath, measureAndLog, MultiLogger, Quality } from '../../automation';
-import type { ApplicationOptions, Logger } from '../../automation';
-import { retry } from './utils';
 
-import { setup as setupDataLossTests } from './areas/workbench/data-loss.test';
-import { setup as setupPreferencesTests } from './areas/preferences/preferences.test';
-import { setup as setupSearchTests } from './areas/search/search.test';
-import { setup as setupNotebookTests } from './areas/notebook/notebook.test';
-import { setup as setupLanguagesTests } from './areas/languages/languages.test';
-import { setup as setupStatusbarTests } from './areas/statusbar/statusbar.test';
-import { setup as setupExtensionTests } from './areas/extensions/extensions.test';
+import minimist = require('minimist');
+
+import fetch from 'node-fetch';
+import type { ApplicationOptions, Logger } from '../../automation';
+import { ConsoleLogger, FileLogger, getBuildElectronPath, getBuildVersion, getDevElectronPath, MultiLogger, measureAndLog, Quality } from '../../automation';
+import { setup as setupAccessibilityTests } from './areas/accessibility/accessibility.test';
+import { setup as setupChatTests } from './areas/chat/chatDisabled.test';
 import { setup as setupExtensionHostRestartTests } from './areas/extensions/extension-host-restart.test';
+import { setup as setupExtensionTests } from './areas/extensions/extensions.test';
+import { setup as setupLanguagesTests } from './areas/languages/languages.test';
 import { setup as setupMultirootTests } from './areas/multiroot/multiroot.test';
+import { setup as setupNotebookTests } from './areas/notebook/notebook.test';
 import { setup as setupOpencodeTests } from './areas/opencode/opencode.test';
 import { setup as setupOpencodeLifecycleTests } from './areas/opencode/opencode-server-lifecycle.test';
-import { setup as setupLocalizationTests } from './areas/workbench/localization.test';
-import { setup as setupLaunchTests } from './areas/workbench/launch.test';
-import { setup as setupTerminalTests } from './areas/terminal/terminal.test';
+import { setup as setupOpencodeSessionsTests } from './areas/opencode/opencode-sessions.test.js';
+import { opencodeSmokeServerPassword, opencodeSmokeServePort } from './areas/opencode/opencode-test-helpers';
+import { setup as setupPreferencesTests } from './areas/preferences/preferences.test';
+import { setup as setupSearchTests } from './areas/search/search.test';
+import { setup as setupStatusbarTests } from './areas/statusbar/statusbar.test';
 import { setup as setupTaskTests } from './areas/task/task.test';
-import { setup as setupChatTests } from './areas/chat/chatDisabled.test';
-import { setup as setupAccessibilityTests } from './areas/accessibility/accessibility.test';
+import { setup as setupTerminalTests } from './areas/terminal/terminal.test';
+import { setup as setupDataLossTests } from './areas/workbench/data-loss.test';
+import { setup as setupLaunchTests } from './areas/workbench/launch.test';
+import { setup as setupLocalizationTests } from './areas/workbench/localization.test';
+import { retry } from './utils';
 
 const rootPath = path.join(__dirname, '..', '..', '..');
 
@@ -364,6 +367,13 @@ async function setup(): Promise<void> {
 
 	// Copy smoke test extension for extension host restart test
 	if (!opts.web && !opts.remote) {
+		fs.mkdirSync(path.join(userDataDir, 'User'), { recursive: true });
+		fs.writeFileSync(path.join(userDataDir, 'User', 'settings.json'), `${JSON.stringify({
+			'opencode.autoStart': false,
+			'opencode.port': opencodeSmokeServePort,
+			'opencode.serverPassword': opencodeSmokeServerPassword,
+		}, undefined, '\t')}\n`);
+
 		const smokeExtPath = path.join(rootPath, 'test', 'smoke', 'extensions', 'vscode-smoketest-ext-host');
 		const dest = path.join(extensionsPath, 'vscode-smoketest-ext-host');
 		if (fs.existsSync(dest)) {
@@ -440,6 +450,7 @@ describe(`VSCode Smoke Tests (${opts.web ? 'Web' : 'Electron'})`, () => {
 	if (!opts.web && !opts.remote) { setupLaunchTests(logger); }
 	if (!opts.web) { setupChatTests(logger); }
 	if (!opts.web && !opts.remote) { setupOpencodeTests(logger); }
+	if (!opts.web && !opts.remote) { setupOpencodeSessionsTests(logger); }
 	if (!opts.web && !opts.remote) { setupOpencodeLifecycleTests(logger); }
 	setupAccessibilityTests(logger, opts, quality);
 });
