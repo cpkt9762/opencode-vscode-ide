@@ -195,6 +195,17 @@ jobs:
             sleep 10
           done
 
+      # build/linux/dependencies-generator.ts hard-fails if generated .deb deps
+      # diverge from the upstream reference list in dep-lists.ts (line 23
+      # FAIL_BUILD_FOR_NEW_DEPENDENCIES = true). A fork is expected to drift,
+      # so downgrade strict-fail to warn-only just for the release build.
+      - name: Relax deb dependency strict check
+        run: |
+          set -euo pipefail
+          sed -i 's/FAIL_BUILD_FOR_NEW_DEPENDENCIES: boolean = true/FAIL_BUILD_FOR_NEW_DEPENDENCIES: boolean = false/' \
+            build/linux/dependencies-generator.ts
+          grep -n FAIL_BUILD_FOR_NEW_DEPENDENCIES build/linux/dependencies-generator.ts
+
       - name: Download builtin extensions
         run: npm run download-builtin-extensions
 
@@ -295,26 +306,39 @@ jobs:
           }
 
       # patchWin32DependenciesTask in build/gulpfile.vscode.ts globs **/*.node
-      # without platform filtering, so cross-platform prebuilds (darwin/linux)
-      # in @github/copilot/sdk/prebuilds/ make rcedit.exe crash. Strip them
-      # before building so only Windows .node files reach rcedit.
-      - name: Strip non-Windows native prebuilds
+      # without platform filtering and feeds every match to rcedit.exe, which
+      # crashes on non-Windows binaries. Cross-platform .node files appear in
+      # multiple naming schemes:
+      #   prebuilds/{darwin,linux}-{arm64,x64}/...   (prebuildify convention)
+      #   vendor/audio-capture/{x64,arm64}-darwin/... (@anthropic-ai/claude-agent-sdk)
+      #   native/{darwin,linux}/...                  (other libs)
+      # so we scan every .node file and drop any whose path contains a
+      # non-Windows OS token in any segment.
+      - name: Strip non-Windows native binaries
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $patterns = @('darwin-*', 'linux-*', 'android-*', 'freebsd-*', 'openbsd-*')
+          $osTokens = @('darwin', 'linux', 'android', 'freebsd', 'openbsd', 'aix', 'sunos', 'netbsd')
           $removed = 0
-          Get-ChildItem -Path 'node_modules' -Directory -Filter 'prebuilds' -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-            Get-ChildItem -Path $_.FullName -Directory -ErrorAction SilentlyContinue | Where-Object {
-              $name = $_.Name
-              ($patterns | ForEach-Object { $name -like $_ }) -contains $true
-            } | ForEach-Object {
-              Write-Host "Removing $($_.FullName)"
-              Remove-Item -Recurse -Force $_.FullName
-              $script:removed++
+          Get-ChildItem -Path 'node_modules' -Recurse -Filter '*.node' -ErrorAction SilentlyContinue | Where-Object {
+            $segments = ($_.FullName -split '\\') | Where-Object { $_ }
+            $hit = $false
+            foreach ($seg in $segments) {
+              foreach ($tok in $osTokens) {
+                if ($seg -eq $tok -or $seg -match "(^|[-_])$tok([-_]|$)") {
+                  $hit = $true
+                  break
+                }
+              }
+              if ($hit) { break }
             }
+            $hit
+          } | ForEach-Object {
+            Write-Host "Removing $($_.FullName)"
+            Remove-Item -Force $_.FullName
+            $script:removed++
           }
-          Write-Host "Stripped $removed non-Windows prebuild directories"
+          Write-Host "Stripped $removed non-Windows .node files"
 
       - name: Download builtin extensions
         run: npm run download-builtin-extensions
