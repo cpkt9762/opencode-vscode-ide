@@ -402,6 +402,44 @@ export const BOOTSTRAP = `<script>
   function findPromptTarget() {
 	return document.querySelector('[data-component="prompt-input"]') || document.querySelector('[contenteditable="true"]')
   }
+  // Fix: Mod+A on contenteditable can escape and select the iframe body; intercept early to keep selection editor-local.
+  document.addEventListener("keydown", function(e) {
+    if (!(e.metaKey || e.ctrlKey)) return
+    if (e.metaKey && e.ctrlKey) return
+    if (e.shiftKey || e.altKey) return
+    if ((e.key || "").toLowerCase() !== "a") return
+    if (e.isComposing || e.keyCode === 229) return
+
+    var active = document.activeElement
+    if (!active) return
+    if (active.tagName === "INPUT" || active.tagName === "TEXTAREA") return
+
+    var prompt = active.closest && active.closest('[data-component="prompt-input"]')
+    if (!prompt) {
+      var fallbackPrompt = findPromptTarget()
+      if (fallbackPrompt && (active === fallbackPrompt || fallbackPrompt.contains(active))) {
+        prompt = fallbackPrompt
+      }
+    }
+
+    var target = prompt || (active.isContentEditable ? active : null)
+    if (!target && active.closest) {
+      target = active.closest('[contenteditable="true"]')
+    }
+    if (!target) return
+
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    if (target.focus) target.focus()
+    var range = document.createRange()
+    range.selectNodeContents(target)
+    var sel = window.getSelection()
+    if (sel) {
+      sel.removeAllRanges()
+      sel.addRange(range)
+    }
+    blog("select-all contenteditable target=" + (target.getAttribute("data-component") || target.tagName))
+  }, true)
   function dispatchInsertInput(target, text) {
 	try {
 	  target.dispatchEvent(new InputEvent("input", {
