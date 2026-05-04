@@ -312,31 +312,37 @@ jobs:
       #   prebuilds/{darwin,linux}-{arm64,x64}/...   (prebuildify convention)
       #   vendor/audio-capture/{x64,arm64}-darwin/... (@anthropic-ai/claude-agent-sdk)
       #   native/{darwin,linux}/...                  (other libs)
-      # so we scan every .node file and drop any whose path contains a
-      # non-Windows OS token in any segment.
+      # AND in multiple node_modules trees: the root node_modules/ plus every
+      # extensions/*/node_modules/ subtree (extensions ship their own deps).
+      # Scan all roots, drop any .node whose path contains a non-Windows OS
+      # token in any segment.
       - name: Strip non-Windows native binaries
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $osTokens = @('darwin', 'linux', 'android', 'freebsd', 'openbsd', 'aix', 'sunos', 'netbsd')
+          $searchRoots = @('node_modules', 'extensions', '.build')
           $removed = 0
-          Get-ChildItem -Path 'node_modules' -Recurse -Filter '*.node' -ErrorAction SilentlyContinue | Where-Object {
-            $segments = ($_.FullName -split '\\') | Where-Object { $_ }
-            $hit = $false
-            foreach ($seg in $segments) {
-              foreach ($tok in $osTokens) {
-                if ($seg -eq $tok -or $seg -match "(^|[-_])$tok([-_]|$)") {
-                  $hit = $true
-                  break
+          foreach ($root in $searchRoots) {
+            if (-not (Test-Path $root)) { continue }
+            Get-ChildItem -Path $root -Recurse -Filter '*.node' -ErrorAction SilentlyContinue | Where-Object {
+              $segments = ($_.FullName -split '\\') | Where-Object { $_ }
+              $hit = $false
+              foreach ($seg in $segments) {
+                foreach ($tok in $osTokens) {
+                  if ($seg -eq $tok -or $seg -match "(^|[-_])$tok([-_]|$)") {
+                    $hit = $true
+                    break
+                  }
                 }
+                if ($hit) { break }
               }
-              if ($hit) { break }
+              $hit
+            } | ForEach-Object {
+              Write-Host "Removing $($_.FullName)"
+              Remove-Item -Force $_.FullName
+              $script:removed++
             }
-            $hit
-          } | ForEach-Object {
-            Write-Host "Removing $($_.FullName)"
-            Remove-Item -Force $_.FullName
-            $script:removed++
           }
           Write-Host "Stripped $removed non-Windows .node files"
 
