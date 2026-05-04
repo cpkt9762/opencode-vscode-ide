@@ -89,6 +89,8 @@ const sessionsMinimumWidth = 240;
 const sideBySideMinimumWidth = 600;
 const sideBySideMaximumAutoWidth = 800;
 const defaultChatSashRatio = 0.65;
+const sessionsOrientationStorageKey = "opencode.sessions.orientation";
+const sessionsSashPositionStorageKey = "opencode.sessions.sashPosition";
 const opencodeSessionsOrientationStacked = "stacked";
 const opencodeSessionsOrientationSideBySide = "sideBySide";
 const opencodeSessionsViewerVisibleContext = new RawContextKey<boolean>("opencodeSessionsViewerVisible", false);
@@ -131,6 +133,7 @@ export class OpencodeSidebarPane extends ViewPane {
 	private dragActive = false;
 	private sessionsOrientation = OpencodeSessionsViewerOrientation.Stacked;
 	private sessionsSashRatio = defaultChatSashRatio;
+	private _sashWriteTimer: ReturnType<typeof setTimeout> | undefined;
 	private didRunSideBySideAutoWiden = false;
 	private lastLayoutWidth = 0;
 	private lastLayoutHeight = 0;
@@ -169,6 +172,7 @@ export class OpencodeSidebarPane extends ViewPane {
 		this.sessionsViewerVisibleContextKey = opencodeSessionsViewerVisibleContext.bindTo(contextKeyService);
 		this.sessionsViewerOrientationContextKey = opencodeSessionsViewerOrientationContext.bindTo(contextKeyService);
 		this.sessionsOrientation = this._loadOrientation();
+		this.sessionsSashRatio = this._loadSashRatio();
 		this.updateSessionsContextKeys();
 		this.messageBridge = this._register(new MessageBridge());
 		this._register(
@@ -178,6 +182,7 @@ export class OpencodeSidebarPane extends ViewPane {
 		);
 		this._register(
 			toDisposable(() => {
+				this.flushSessionsSashPosition();
 				this.clearLoadingTimer();
 				this.loadRequest += 1;
 			}),
@@ -606,7 +611,7 @@ export class OpencodeSidebarPane extends ViewPane {
 			return;
 		}
 
-		this.splitView.resizeView(chatViewIndex, Math.round(this.lastLayoutWidth * this.sessionsSashRatio));
+		this.splitView.resizeView(chatViewIndex, Math.round(this.lastLayoutWidth * this.getClampedSessionsSashRatio()));
 	}
 
 	private updateSessionsSashRatio(): void {
@@ -616,6 +621,17 @@ export class OpencodeSidebarPane extends ViewPane {
 
 		this.sessionsSashRatio = this.splitView.getViewSize(chatViewIndex) / this.lastLayoutWidth;
 		this._persistSashPosition();
+	}
+
+	private getClampedSessionsSashRatio(width = this.lastLayoutWidth): number {
+		if (width <= 0) {
+			return this.sessionsSashRatio;
+		}
+
+		return Math.max(
+			chatMinimumWidth / width,
+			Math.min(this.sessionsSashRatio, 1 - (sessionsMinimumWidth / width)),
+		);
 	}
 
 	private toSessionsOrientation(orientation: SessionsOrientationInput): OpencodeSessionsViewerOrientation {
@@ -640,12 +656,62 @@ export class OpencodeSidebarPane extends ViewPane {
 	}
 
 	private _loadOrientation(): OpencodeSessionsViewerOrientation {
-		return OpencodeSessionsViewerOrientation.Stacked;
+		return this.storageService.get(
+			sessionsOrientationStorageKey,
+			StorageScope.PROFILE,
+			opencodeSessionsOrientationStacked,
+		) === opencodeSessionsOrientationSideBySide
+			? OpencodeSessionsViewerOrientation.SideBySide
+			: OpencodeSessionsViewerOrientation.Stacked;
 	}
 
-	private _persistOrientation(_orientation = this.sessionsOrientation): void { }
+	private _loadSashRatio(): number {
+		return this.storageService.getNumber(
+			sessionsSashPositionStorageKey,
+			StorageScope.PROFILE,
+			defaultChatSashRatio,
+		);
+	}
 
-	private _persistSashPosition(_ratio = this.sessionsSashRatio): void { }
+	private _persistOrientation(orientation = this.sessionsOrientation): void {
+		this.storageService.store(
+			sessionsOrientationStorageKey,
+			this.toSessionsOrientationContextValue(orientation),
+			StorageScope.PROFILE,
+			StorageTarget.USER,
+		);
+	}
+
+	private _persistSashPosition(ratio = this.sessionsSashRatio): void {
+		if (this._sashWriteTimer) {
+			clearTimeout(this._sashWriteTimer);
+		}
+
+		this._sashWriteTimer = setTimeout(() => {
+			this._sashWriteTimer = undefined;
+			this.storageService.store(
+				sessionsSashPositionStorageKey,
+				ratio,
+				StorageScope.PROFILE,
+				StorageTarget.USER,
+			);
+		}, 500);
+	}
+
+	private flushSessionsSashPosition(): void {
+		if (!this._sashWriteTimer) {
+			return;
+		}
+
+		clearTimeout(this._sashWriteTimer);
+		this._sashWriteTimer = undefined;
+		this.storageService.store(
+			sessionsSashPositionStorageKey,
+			this.sessionsSashRatio,
+			StorageScope.PROFILE,
+			StorageTarget.USER,
+		);
+	}
 
 	private async handleMessage(message: IOpencodeMessage): Promise<void> {
 		switch (message.type) {
