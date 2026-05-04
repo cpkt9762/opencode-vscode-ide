@@ -64,7 +64,7 @@ async function waitForOpencodeIframe(app: Application): Promise<void> {
 				if (
 					iframe instanceof HTMLIFrameElement &&
 					iframe.src.startsWith('http://127.0.0.1:') &&
-					iframe.style.display === 'block'
+					getComputedStyle(iframe).display !== 'none'
 				) {
 					return;
 				}
