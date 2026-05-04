@@ -1,0 +1,36 @@
+=== F2 Fix Evidence ===
+
+--- BEFORE ---
+grep -n "catch" opencode-test-helpers.ts (before fix):
+  42: } catch {
+  43:     return false;   <-- no comment
+  57: } catch {
+  58:     // wait and retry   <-- comment present but terse
+  90: } catch {
+  91:     return undefined;   <-- no comment
+  98: } catch {
+  99:     // Process may have already exited; that's fine.   <-- comment present
+
+--- AFTER ---
+grep -B1 -A3 "catch" opencode-test-helpers.ts (after fix):
+  42: } catch {
+  43:     // network error or server not yet up; treat as unhealthy
+  44:     return false;
+  57: } catch {
+  58:     // health check threw (e.g. ECONNREFUSED); expected — will retry on next iteration
+  90: } catch {
+  91:     // lsof/netstat failed (binary absent or permission denied); treat as no process found
+  92:     return undefined;
+  100: } catch {
+  101:     // Process may have already exited; that's fine.
+
+--- EMPTY CATCH VERIFICATION ---
+grep -nE "catch[[:space:]]*(\([^)]*\))?[[:space:]]*\{[[:space:]]*\}" opencode-sessions.test.ts opencode-test-helpers.ts
+(no output — zero truly empty catches)
+
+--- CONSOLE.ERROR FINDING ---
+test/smoke/src/main.ts:160: console.error(errorMessage);
+This line is in the pre-existing fail() function.
+T16 diff (commit 28e305417c9) did NOT introduce this line.
+T16 only added: setupOpencodeSessionsTests registration + settings.json write.
+Action: NOT modified (pre-existing, out of scope per task instructions).

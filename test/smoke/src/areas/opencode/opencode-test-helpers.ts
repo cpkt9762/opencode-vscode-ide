@@ -40,6 +40,7 @@ export async function isOpencodeServeHealthy(port = defaultOpencodeServePort, pa
 		} : undefined);
 		return password ? response.ok : response.ok || response.status === 401;
 	} catch {
+		// network error or server not yet up; treat as unhealthy
 		return false;
 	}
 }
@@ -54,9 +55,9 @@ export async function waitForOpencodeServe(getOutput = () => '', port = defaultO
 					resolve();
 					return;
 				}
-			} catch {
-				// wait and retry
-			}
+		} catch {
+			// health check threw (e.g. ECONNREFUSED); expected — will retry on next iteration
+		}
 
 			if (Date.now() - start > deadlineMs) {
 				reject(withOutput(`opencode serve did not start within ${Math.round(deadlineMs / 1000)}s. ${opencodeInstallHint}`));
@@ -88,6 +89,7 @@ export async function findOpencodeServeProcess(port: number): Promise<number | u
 		const pid = output ? Number(output.split(/\r?\n/)[0]) : NaN;
 		return Number.isFinite(pid) ? pid : undefined;
 	} catch {
+		// lsof/netstat failed (binary absent or permission denied); treat as no process found
 		return undefined;
 	}
 }
