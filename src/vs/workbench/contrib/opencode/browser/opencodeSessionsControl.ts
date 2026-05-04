@@ -5,7 +5,9 @@
 import * as dom from "../../../../base/browser/dom.js";
 import type { HoverPosition } from "../../../../base/browser/ui/hover/hoverWidget.js";
 import type { IListStyles } from "../../../../base/browser/ui/list/listWidget.js";
+import { Codicon } from "../../../../base/common/codicons.js";
 import { Disposable, toDisposable } from "../../../../base/common/lifecycle.js";
+import { ThemeIcon } from "../../../../base/common/themables.js";
 import { ICommandService } from "../../../../platform/commands/common/commands.js";
 import { IContextMenuService } from "../../../../platform/contextview/browser/contextView.js";
 import { IHoverService } from "../../../../platform/hover/browser/hover.js";
@@ -37,10 +39,12 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 
 	private headerElement: HTMLElement | undefined;
 	private listContainer: HTMLElement | undefined;
+	private stateContainer: HTMLElement | undefined;
 	private searchInput: HTMLInputElement | undefined;
 	private clearSearchButton: HTMLButtonElement | undefined;
 	private agentSelect: HTMLSelectElement | undefined;
 	private filterBadge: HTMLElement | undefined;
+	private streamStatusIndicator: HTMLElement | undefined;
 	private sessionsList: WorkbenchList<IOpencodeListItem> | undefined;
 	private renderedItems: readonly IOpencodeListItem[] = [];
 	private searchDebounce: ReturnType<typeof setTimeout> | undefined;
@@ -112,10 +116,12 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 		this.sessionsContainer = undefined;
 		this.headerElement = undefined;
 		this.listContainer = undefined;
+		this.stateContainer = undefined;
 		this.searchInput = undefined;
 		this.clearSearchButton = undefined;
 		this.agentSelect = undefined;
 		this.filterBadge = undefined;
+		this.streamStatusIndicator = undefined;
 		this.sessionsList = undefined;
 	}
 
@@ -126,6 +132,7 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 		this.sessionsContainer.style.height = "100%";
 
 		this.createHeader(this.sessionsContainer);
+		this.createStateContainer(this.sessionsContainer);
 		this.createList(this.sessionsContainer);
 	}
 
@@ -137,7 +144,7 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 
 		const controls = dom.append(this.headerElement, dom.$(".opencode-sessions-filter-controls"));
 		controls.style.display = "grid";
-		controls.style.gridTemplateColumns = "minmax(0, 1fr) auto";
+		controls.style.gridTemplateColumns = "minmax(0, 1fr) auto auto";
 		controls.style.gap = "6px";
 		controls.style.alignItems = "center";
 
@@ -172,11 +179,30 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 		}));
 		this.agentSelect.style.maxWidth = "120px";
 
+		this.streamStatusIndicator = dom.append(controls, dom.$("span.opencode-sessions-stream-status"));
+		this.streamStatusIndicator.style.width = "7px";
+		this.streamStatusIndicator.style.height = "7px";
+		this.streamStatusIndicator.style.borderRadius = "50%";
+		this.streamStatusIndicator.style.background = "var(--vscode-charts-yellow)";
+		this.streamStatusIndicator.style.opacity = "0";
+		this.streamStatusIndicator.title = "Sessions stream reconnecting";
+
 		this.filterBadge = dom.append(this.headerElement, dom.$("span.opencode-sessions-filter-badge"));
 		this.filterBadge.style.fontSize = "11px";
 		this.filterBadge.style.opacity = "0.75";
 		this.updateSearchClearButton();
 		this.updateFilterBadge(0, 0);
+	}
+
+	private createStateContainer(container: HTMLElement): void {
+		this.stateContainer = dom.append(container, dom.$(".opencode-sessions-state"));
+		this.stateContainer.style.flex = "1";
+		this.stateContainer.style.minHeight = "0";
+		this.stateContainer.style.alignItems = "center";
+		this.stateContainer.style.justifyContent = "center";
+		this.stateContainer.style.padding = "16px";
+		this.stateContainer.style.textAlign = "center";
+		dom.hide(this.stateContainer);
 	}
 
 	private createList(container: HTMLElement): void {
@@ -210,6 +236,10 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 
 		if (this.agentSelect) {
 			this._register(dom.addDisposableListener(this.agentSelect, dom.EventType.CHANGE, () => this.updateFilter({ agent: this.agentSelect?.value || undefined })));
+		}
+
+		if (this.stateContainer) {
+			this._register(dom.addDisposableListener(this.stateContainer, dom.EventType.CLICK, event => this.onStateActionClick(event)));
 		}
 
 		const sessionsList = this.sessionsList;
@@ -271,6 +301,164 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 		]);
 		this.sessionsList?.splice(0, this.sessionsList.length, this.renderedItems);
 		this.updateFilterBadge(filteredSessions.length, sessions.length);
+		this.renderStateView();
+		this.updateStreamStatusIndicator();
+	}
+
+	private renderStateView(): void {
+		const stateContainer = this.stateContainer;
+		const listContainer = this.listContainer;
+		if (!stateContainer || !listContainer) {
+			return;
+		}
+
+		stateContainer.replaceChildren();
+		if (this.sessionsService.state.loading) {
+			this.showStateView();
+			this.renderStateMessage({
+				icon: ThemeIcon.asClassName(ThemeIcon.modify(Codicon.sync, "spin")),
+				title: "Loading sessions...",
+			});
+			return;
+		}
+
+		if (this.sessionsService.state.error) {
+			this.showStateView();
+			const backendNotRunning = this.isBackendNotRunningError(this.sessionsService.state.error);
+			this.renderStateMessage({
+				icon: ThemeIcon.asClassName(backendNotRunning ? Codicon.debugDisconnect : Codicon.warning),
+				title: backendNotRunning ? "OpenCode backend not running" : "Failed to load sessions",
+				message: this.truncatedError(this.sessionsService.state.error),
+				action: "retry",
+				actionLabel: "Retry",
+			});
+			return;
+		}
+
+		if (this.sessionsService.state.sessions.length === 0) {
+			this.showStateView();
+			this.renderStateMessage({
+				icon: ThemeIcon.asClassName(Codicon.add),
+				title: "No sessions yet",
+				action: "new",
+				actionLabel: "New Session",
+			});
+			return;
+		}
+
+		stateContainer.style.display = "none";
+		dom.show(listContainer);
+	}
+
+	private showStateView(): void {
+		if (!this.stateContainer || !this.listContainer) {
+			return;
+		}
+
+		this.stateContainer.style.display = "flex";
+		dom.hide(this.listContainer);
+	}
+
+	private renderStateMessage(state: {
+		readonly icon: string;
+		readonly title: string;
+		readonly message?: string;
+		readonly action?: "new" | "retry";
+		readonly actionLabel?: string;
+	}): void {
+		const stateContainer = this.stateContainer;
+		if (!stateContainer) {
+			return;
+		}
+
+		const content = dom.append(stateContainer, dom.$(".opencode-sessions-state-content"));
+		content.style.display = "grid";
+		content.style.gap = "8px";
+		content.style.justifyItems = "center";
+		content.style.maxWidth = "260px";
+
+		const icon = dom.append(content, dom.$(".opencode-sessions-state-icon"));
+		icon.className = `opencode-sessions-state-icon ${state.icon}`;
+		icon.style.fontSize = "20px";
+
+		const title = dom.append(content, dom.$(".opencode-sessions-state-title"));
+		title.textContent = state.title;
+		title.style.fontWeight = "600";
+
+		if (state.message) {
+			const message = dom.append(content, dom.$(".opencode-sessions-state-message"));
+			message.textContent = state.message;
+			message.title = state.message;
+			message.style.opacity = "0.75";
+			message.style.overflowWrap = "anywhere";
+		}
+
+		if (state.action && state.actionLabel) {
+			const button = dom.append(content, dom.$<HTMLButtonElement>("button.opencode-sessions-state-action", {
+				type: "button",
+			}, state.actionLabel));
+			button.dataset.opencodeSessionsAction = state.action;
+		}
+	}
+
+	private onStateActionClick(event: MouseEvent): void {
+		const target = event.target;
+		if (!(target instanceof HTMLElement)) {
+			return;
+		}
+
+		const button = target.closest("button");
+		if (!(button instanceof HTMLButtonElement)) {
+			return;
+		}
+
+		if (button.dataset.opencodeSessionsAction === "new") {
+			void this.services.commandService.executeCommand("opencode.sessions.new");
+			return;
+		}
+
+		if (button.dataset.opencodeSessionsAction === "retry") {
+			void this.sessionsService.refresh();
+			this.renderSessions();
+		}
+	}
+
+	private updateStreamStatusIndicator(): void {
+		const indicator = this.streamStatusIndicator;
+		if (!indicator) {
+			return;
+		}
+
+		if (this.sessionsService.state.error) {
+			indicator.style.opacity = "1";
+			indicator.style.background = "var(--vscode-errorForeground)";
+			indicator.title = this.isBackendNotRunningError(this.sessionsService.state.error) ? "OpenCode backend not running" : "Sessions stream reconnecting";
+			return;
+		}
+
+		if (this.sessionsService.state.loading) {
+			indicator.style.opacity = "1";
+			indicator.style.background = "var(--vscode-charts-yellow)";
+			indicator.title = "Loading sessions";
+			return;
+		}
+
+		indicator.style.opacity = "0";
+		indicator.title = "Sessions stream connected";
+	}
+
+	private isBackendNotRunningError(error: string): boolean {
+		const message = error.toLocaleLowerCase();
+		return message.includes("http 502") || message.includes(" 502") || message.includes("econnrefused") || message.includes("connection refused") || message.includes("failed to fetch");
+	}
+
+	private truncatedError(error: string): string {
+		const message = error.trim();
+		if (message.length <= 160) {
+			return message;
+		}
+
+		return `${message.slice(0, 157)}...`;
 	}
 
 	private filteredSessions(sessions: readonly IOpencodeSession[]): IOpencodeSession[] {
