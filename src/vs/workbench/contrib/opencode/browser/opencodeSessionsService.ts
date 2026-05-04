@@ -128,15 +128,11 @@ function toStatusMap(value: unknown): IOpencodeSessionStatusMap {
 function eventSession(
 	event: IOpencodeSessionEvent,
 ): IOpencodeSession | undefined {
-	if (
-		(event.type === "created" || event.type === "updated") &&
-		toSession(event.session)
-	) {
+	if (event.type === "created" || event.type === "updated") {
 		return toSession(event.session);
 	}
 
-	const input = record(event) ? event.info : undefined;
-	return toSession(input);
+	return undefined;
 }
 
 function eventSessionID(event: IOpencodeSessionEvent): string | undefined {
@@ -154,8 +150,7 @@ function eventStatus(
 		return normalizeStatus(event.status);
 	}
 
-	const input = record(event) ? event.status : undefined;
-	return normalizeStatus(input);
+	return undefined;
 }
 
 function shareUrl(value: unknown): string | undefined {

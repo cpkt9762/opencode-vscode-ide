@@ -6,6 +6,7 @@
 
 import { Disposable } from "../../../../base/common/lifecycle.js";
 import { localize } from '../../../../nls.js';
+import type { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import {
 	Extensions as ConfigurationExtensions,
 	type IConfigurationRegistry,
@@ -16,6 +17,7 @@ import {
 } from "../../../../platform/instantiation/common/extensions.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
 import { Registry } from "../../../../platform/registry/common/platform.js";
+import type { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
 import type { IWorkbenchContributionsRegistry } from "../../../common/contributions.js";
 import { Extensions as WorkbenchExtensions } from "../../../common/contributions.js";
 import { LifecyclePhase } from "../../../services/lifecycle/common/lifecycle.js";
@@ -24,7 +26,11 @@ import {
 	IOpencodeEditorService,
 	OpencodeEditorService,
 } from "../common/opencodeEditorService.js";
+import { IOpencodeSessionsService } from "../common/opencodeSessionsTypes.js";
+import type { ISpaProxyService } from "../electron-main/spaProxyService.js";
 import { EditCodeService } from "./editCodeService.js";
+import "./opencodeSessionsActions.js";
+import { OpencodeSessionsService } from "./opencodeSessionsService.js";
 import "./sidebarPane.js";
 
 class OpencodeWorkbenchContribution extends Disposable {
@@ -83,5 +89,18 @@ registerSingleton(
 registerSingleton(
 	IEditCodeService,
 	EditCodeService,
+	InstantiationType.Delayed,
+);
+registerSingleton<
+	IOpencodeSessionsService,
+	[
+		ILogService,
+		ISpaProxyService,
+		IWorkspaceContextService,
+		IConfigurationService,
+	]
+>(
+	IOpencodeSessionsService,
+	OpencodeSessionsService,
 	InstantiationType.Delayed,
 );
