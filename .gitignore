@@ -49,4 +49,5 @@ dist
 # Shipped opencode backend binaries live outside git (too large for GitHub).
 # They are downloaded/placed at build time by the fork's install scripts.
 resources/opencode-bin/
+.sisyphus/
 
