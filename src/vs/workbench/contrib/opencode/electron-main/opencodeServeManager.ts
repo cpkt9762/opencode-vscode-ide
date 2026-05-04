@@ -21,12 +21,14 @@ import {
 	type IDisposable,
 } from "../../../../base/common/lifecycle.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
+import { IEnvironmentMainService } from "../../../../platform/environment/electron-main/environmentMainService.js";
 import {
 	InstantiationType,
 	registerSingleton,
 } from "../../../../platform/instantiation/common/extensions.js";
 import { createDecorator } from "../../../../platform/instantiation/common/instantiation.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
+import { getResolvedShellEnv } from "../../../../platform/shell/node/shellEnv.js";
 
 const STARTUP_TIMEOUT = 15_000;
 const HEALTH_TIMEOUT = 2_000;
@@ -96,6 +98,7 @@ export class OpencodeServeManager
 	constructor(
 		private readonly configurationService: IConfigurationService,
 		private readonly logService: ILogService,
+		private readonly environmentMainService: IEnvironmentMainService,
 	) {
 		super();
 
@@ -197,7 +200,12 @@ export class OpencodeServeManager
 
 		await this.killStaleServer(port);
 
-		const binaryPath = this.findBinaryPath();
+		// macOS GUI launches inherit launchd's minimal PATH; resolve the user's login-shell
+		// env so opencode serve and its child processes (e.g. rust-analyzer spawned by the
+		// oh-my-opencode plugin) see the same PATH the user has in their terminal.
+		const mergedEnv = await this.getMergedEnv();
+
+		const binaryPath = this.findBinaryPath(mergedEnv);
 		if (!binaryPath) {
 			throw new Error(
 				"Failed to find an opencode binary. Configure opencode.binaryPath or add opencode to PATH.",
@@ -205,7 +213,7 @@ export class OpencodeServeManager
 		}
 
 		const deadline = Date.now() + STARTUP_TIMEOUT;
-		const env = { ...process.env };
+		const env = { ...mergedEnv };
 		delete env.OPENCODE_SERVER_PASSWORD;
 		env.OPENCODE_SERVER_PASSWORD = this.password;
 		const proc = this.spawnProcess(
@@ -464,7 +472,7 @@ export class OpencodeServeManager
 		});
 	}
 
-	private findBinaryPath(): string | undefined {
+	private findBinaryPath(env: NodeJS.ProcessEnv = process.env): string | undefined {
 		const configuredPath = this.getBinaryPath();
 		if (configuredPath) {
 			const resolvedPath = this.resolveConfiguredBinaryPath(configuredPath);
@@ -478,7 +486,7 @@ export class OpencodeServeManager
 			);
 		}
 
-		const pathBinary = this.findBinaryOnPath();
+		const pathBinary = this.findBinaryOnPath(env);
 		if (pathBinary) {
 			return pathBinary;
 		}
@@ -493,6 +501,24 @@ export class OpencodeServeManager
 		}
 
 		return undefined;
+	}
+
+	protected async getMergedEnv(): Promise<NodeJS.ProcessEnv> {
+		let shellEnv: typeof process.env = {};
+		try {
+			shellEnv = await getResolvedShellEnv(
+				this.configurationService,
+				this.logService,
+				this.environmentMainService.args,
+				process.env,
+			);
+		} catch (error) {
+			this.logService.error(
+				"[opencode] failed to resolve shell environment for opencode serve",
+				error,
+			);
+		}
+		return { ...process.env, ...shellEnv };
 	}
 
 	protected async killStaleServer(port: number): Promise<void> {
@@ -579,7 +605,7 @@ export class OpencodeServeManager
 		return undefined;
 	}
 
-	private findBinaryOnPath(): string | undefined {
+	private findBinaryOnPath(env: NodeJS.ProcessEnv = process.env): string | undefined {
 		const command =
 			platform() === "win32" ? "where opencode" : "which opencode";
 
@@ -587,6 +613,7 @@ export class OpencodeServeManager
 			const output = execSync(command, {
 				encoding: "utf8",
 				stdio: ["ignore", "pipe", "ignore"],
+				env,
 			}).trim();
 			const path = output
 				.split(/\r?\n/)
@@ -721,6 +748,7 @@ function isHealthResponse(value: unknown): value is { healthy: true } {
 
 IConfigurationService(OpencodeServeManager, "", 0);
 ILogService(OpencodeServeManager, "", 1);
+IEnvironmentMainService(OpencodeServeManager, "", 2);
 
 registerSingleton(
 	IOpencodeServeManager,

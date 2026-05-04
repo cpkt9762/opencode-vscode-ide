@@ -19,6 +19,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { OpencodeServeManager } from '../../electron-main/opencodeServeManager.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import type { IEnvironmentMainService } from '../../../../../platform/environment/electron-main/environmentMainService.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 
 type MockBackend = { port: number; close: () => Promise<void>; getRequests: () => number };
@@ -137,9 +138,18 @@ function fakeSpawn(opts: { exitOnSigterm?: boolean } = {}) {
 	};
 }
 
+const stubEnvironmentMainService: IEnvironmentMainService = { args: {} } as IEnvironmentMainService;
+
 class TestableOpencodeServeManager extends OpencodeServeManager {
 	spawnCalls: { command: string; args: readonly string[]; options: SpawnOptions }[] = [];
 	nextProcess: ChildProcess | FakeChildProcess | undefined;
+	constructor(
+		configurationService: TestConfigurationService,
+		logService: NullLogService,
+		environmentMainService: IEnvironmentMainService = stubEnvironmentMainService,
+	) {
+		super(configurationService, logService, environmentMainService);
+	}
 	protected override spawnProcess(command: string, args: readonly string[], options: SpawnOptions): ChildProcess {
 		this.spawnCalls.push({ command, args, options });
 		if (!this.nextProcess) {
@@ -153,6 +163,11 @@ class TestableOpencodeServeManager extends OpencodeServeManager {
 	}
 	protected override async findProcessOnPort(_port: number): Promise<number | undefined> {
 		return undefined;
+	}
+	protected override async getMergedEnv(): Promise<NodeJS.ProcessEnv> {
+		// Tests must not spawn the user's login shell; reuse the test process env so
+		// findBinaryPath() PATH-lookup tests still see the env they manipulate directly.
+		return { ...process.env };
 	}
 	get testState() { return this._testState; }
 	get testWeStarted() { return this._testWeStarted; }
