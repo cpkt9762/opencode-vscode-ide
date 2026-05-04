@@ -387,6 +387,58 @@ suite("OpencodeSessionsService", () => {
 		}
 	});
 
+	test("emits connection state while SSE reconnects", async () => {
+		const workspace = createWorkspaceHarness("/workspace/a");
+		const calls: string[] = [];
+		const streams: TestEventStream[] = [];
+		let backendUp = true;
+		const service = createService({
+			workspace,
+			fetchFn: createFetch(
+				{ "http://127.0.0.1:4101": { sessions: [] } },
+				calls,
+			),
+			eventStreamFactory: async (_url, signal) => {
+				if (!backendUp) {
+					throw new Error("backend down");
+				}
+
+				const stream = new TestEventStream();
+				signal.addEventListener("abort", () => stream.close(), { once: true });
+				streams.push(stream);
+				return stream;
+			},
+		});
+
+		try {
+			const states: boolean[] = [];
+			const listener = service.onDidChangeConnection((connected) => states.push(connected));
+			await service.start();
+			await waitFor(
+				() => states.includes(true),
+				"SSE connection did not report connected",
+			);
+
+			backendUp = false;
+			streams[0].fail(new Error("backend crashed"));
+			await waitFor(
+				() => states.includes(false),
+				"SSE connection did not report disconnected",
+			);
+
+			backendUp = true;
+			await waitFor(
+				() => states.at(-1) === true,
+				"SSE connection did not report reconnected",
+				1500,
+			);
+			listener.dispose();
+		} finally {
+			service.dispose();
+			workspace.dispose();
+		}
+	});
+
 	test("workspace switch re-fetches and replaces state", async () => {
 		const workspace = createWorkspaceHarness("/workspace/a");
 		const calls: string[] = [];

@@ -208,6 +208,11 @@ export class OpencodeSessionsService
 	);
 	readonly onDidChangeSessions: Event<void> =
 		this.onDidChangeSessionsEmitter.event;
+	private readonly onDidChangeConnectionEmitter = this._register(
+		new Emitter<boolean>(),
+	);
+	readonly onDidChangeConnection: Event<boolean> =
+		this.onDidChangeConnectionEmitter.event;
 
 	readonly state = {
 		sessions: [] as readonly IOpencodeSession[],
@@ -231,6 +236,11 @@ export class OpencodeSessionsService
 	private heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	private sseAbort: AbortController | undefined;
+	private sseConnected = false;
+
+	get connectionConnected(): boolean {
+		return this.sseConnected;
+	}
 
 	constructor(
 		private readonly logService: ILogService,
@@ -564,6 +574,7 @@ export class OpencodeSessionsService
 				return;
 			}
 
+			this.setConnectionState(true);
 			this.reconnectAttempt = 0;
 			this.armHeartbeat(run, controller);
 			for await (const input of stream) {
@@ -586,6 +597,7 @@ export class OpencodeSessionsService
 		} finally {
 			if (this.sseAbort === controller) {
 				this.sseAbort = undefined;
+				this.setConnectionState(false);
 			}
 
 			this.clearHeartbeatTimer();
@@ -681,6 +693,16 @@ export class OpencodeSessionsService
 		this.clearReconnectTimer();
 		this.sseAbort?.abort();
 		this.sseAbort = undefined;
+		this.setConnectionState(false);
+	}
+
+	private setConnectionState(connected: boolean): void {
+		if (this.sseConnected === connected) {
+			return;
+		}
+
+		this.sseConnected = connected;
+		this.onDidChangeConnectionEmitter.fire(connected);
 	}
 
 	private isCurrentSSE(run: number, controller: AbortController): boolean {

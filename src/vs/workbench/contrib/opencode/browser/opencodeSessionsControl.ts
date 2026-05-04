@@ -17,19 +17,27 @@ import { IStorageService } from "../../../../platform/storage/common/storage.js"
 import type { IStyleOverride } from "../../../../platform/theme/browser/defaultStyles.js";
 import { IThemeService } from "../../../../platform/theme/common/themeService.js";
 import { groupByDate } from "../common/opencodeSessionsGrouping.js";
-import type { IOpencodeSession, IOpencodeSessionsControl } from "../common/opencodeSessionsTypes.js";
+import type { IOpencodeSession, IOpencodeSessionsControl, SessionsGroupId } from "../common/opencodeSessionsTypes.js";
 import { IOpencodeSessionsService } from "../common/opencodeSessionsTypes.js";
+import { OpencodeSessionsService } from "./opencodeSessionsService.js";
+import type { IOpencodeListItem } from "./opencodeSessionsViewer.js";
 import {
 	extractAgentName,
 	OpencodeSessionsGroupHeaderRenderer,
 	OpencodeSessionsListVirtualDelegate,
 	OpencodeSessionsRowRenderer,
 } from "./opencodeSessionsViewer.js";
-import type { IOpencodeListItem } from "./opencodeSessionsViewer.js";
 
 export interface IOpencodeSessionsControlOptions {
- 	getHoverPosition(): HoverPosition;
- 	readonly overrideStyles?: IStyleOverride<IListStyles>;
+  	getHoverPosition(): HoverPosition;
+  	readonly overrideStyles?: IStyleOverride<IListStyles>;
+}
+
+interface IListStateSnapshot {
+	readonly focusKeys: readonly string[];
+	readonly selectionKeys: readonly string[];
+	readonly scrollTop: number;
+	readonly collapsedGroupIds: readonly SessionsGroupId[];
 }
 
 export class OpencodeSessionsControl extends Disposable implements IOpencodeSessionsControl {
@@ -47,6 +55,7 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 	private streamStatusIndicator: HTMLElement | undefined;
 	private sessionsList: WorkbenchList<IOpencodeListItem> | undefined;
 	private renderedItems: readonly IOpencodeListItem[] = [];
+	private collapsedGroupIds = new Set<SessionsGroupId>();
 	private searchDebounce: ReturnType<typeof setTimeout> | undefined;
 	private agentOptionsKey = "";
 	private filter: { readonly search: string; readonly agent: string | undefined } = { search: "", agent: undefined };
@@ -92,23 +101,48 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 
  	openFind(): void { }
 
- 	reveal(_sessionID: string): boolean {
- 		return false;
- 	}
-
-	clearFocus(): void { }
-
-	hasFocusOrSelection(): boolean {
-		if (this.services.listService.lastFocusedList === this.sessionsList) {
+	reveal(sessionID: string): boolean {
+		const group = groupByDate(this.filteredSessions(this.sessionsService.state.sessions), "updated")
+			.find(item => item.sessions.some(session => session.id === sessionID));
+		if (!group) {
 			return false;
 		}
 
-		return false;
+		this.collapsedGroupIds.delete(group.id);
+		this.renderSessions();
+		const index = this.renderedItems.findIndex(item => item.kind === "session" && item.session.id === sessionID);
+		if (index < 0 || !this.sessionsList) {
+			return false;
+		}
+
+		this.sessionsList.setFocus([index]);
+		this.sessionsList.setSelection([index]);
+		this.sessionsList.reveal(index);
+		return true;
 	}
 
- 	resetSectionCollapseState(): void { }
+	clearFocus(): void {
+		this.sessionsList?.setFocus([]);
+		this.sessionsList?.setSelection([]);
+	}
 
- 	collapseAllSections(): void { }
+	hasFocusOrSelection(): boolean {
+		if (this.services.listService.lastFocusedList === this.sessionsList) {
+			return true;
+		}
+
+		return (this.sessionsList?.getFocus().length ?? 0) > 0 || (this.sessionsList?.getSelection().length ?? 0) > 0;
+	}
+
+	resetSectionCollapseState(): void {
+		this.collapsedGroupIds.clear();
+		this.renderSessions();
+	}
+
+	collapseAllSections(): void {
+		this.collapsedGroupIds = new Set(this.renderedItems.flatMap(item => item.kind === "group" ? [item.group.id] : []));
+		this.renderSessions();
+	}
 
 	override dispose(): void {
 		super.dispose();
@@ -179,13 +213,13 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 		}));
 		this.agentSelect.style.maxWidth = "120px";
 
-		this.streamStatusIndicator = dom.append(controls, dom.$("span.opencode-sessions-stream-status"));
+		this.streamStatusIndicator = dom.append(controls, dom.$("div.sessions-disconnected-dot"));
 		this.streamStatusIndicator.style.width = "7px";
 		this.streamStatusIndicator.style.height = "7px";
 		this.streamStatusIndicator.style.borderRadius = "50%";
-		this.streamStatusIndicator.style.background = "var(--vscode-charts-yellow)";
+		this.streamStatusIndicator.style.background = "var(--vscode-errorForeground)";
 		this.streamStatusIndicator.style.opacity = "0";
-		this.streamStatusIndicator.title = "Sessions stream reconnecting";
+		this.streamStatusIndicator.title = "Sessions stream disconnected";
 
 		this.filterBadge = dom.append(this.headerElement, dom.$("span.opencode-sessions-filter-badge"));
 		this.filterBadge.style.fontSize = "11px";
@@ -226,6 +260,11 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 
 	private registerListeners(): void {
 		this._register(this.sessionsService.onDidChangeSessions(() => this.scheduleRender()));
+		const connectionService = this.connectionService();
+		if (connectionService) {
+			this._register(connectionService.onDidChangeConnection(() => this.updateStreamStatusIndicator()));
+		}
+
 		if (this.searchInput) {
 			this._register(dom.addDisposableListener(this.searchInput, dom.EventType.INPUT, () => this.scheduleSearchFilter()));
 		}
@@ -288,21 +327,63 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 	}
 
 	private renderSessions(): void {
+		const snapshot = this.snapshotListState();
 		const sessions = this.sessionsService.state.sessions;
 		this.updateAgentOptions(sessions);
 		const filteredSessions = this.filteredSessions(sessions);
-		this.renderedItems = groupByDate(filteredSessions, "updated").flatMap(group => [
-			{ kind: "group", group },
-			...group.sessions.map(session => ({
-				kind: "session" as const,
-				session,
-				status: this.sessionsService.state.status[session.id],
-			})),
-		]);
+		this.renderedItems = groupByDate(filteredSessions, "updated").flatMap(group => {
+			const collapsed = this.collapsedGroupIds.has(group.id);
+			return [
+				{ kind: "group" as const, group, collapsed },
+				...(collapsed ? [] : group.sessions.map(session => ({
+					kind: "session" as const,
+					session,
+					status: this.sessionsService.state.status[session.id],
+				}))),
+			];
+		});
 		this.sessionsList?.splice(0, this.sessionsList.length, this.renderedItems);
+		this.restoreListState(snapshot);
 		this.updateFilterBadge(filteredSessions.length, sessions.length);
 		this.renderStateView();
 		this.updateStreamStatusIndicator();
+	}
+
+	private snapshotListState(): IListStateSnapshot {
+		const list = this.sessionsList;
+		return {
+			focusKeys: list?.getFocus().flatMap(index => this.renderedItems[index] ? [this.listItemKey(this.renderedItems[index])] : []) ?? [],
+			selectionKeys: list?.getSelection().flatMap(index => this.renderedItems[index] ? [this.listItemKey(this.renderedItems[index])] : []) ?? [],
+			scrollTop: list?.scrollTop ?? 0,
+			collapsedGroupIds: Array.from(this.collapsedGroupIds),
+		};
+	}
+
+	private restoreListState(snapshot: IListStateSnapshot): void {
+		const list = this.sessionsList;
+		if (!list) {
+			return;
+		}
+
+		this.collapsedGroupIds = new Set(snapshot.collapsedGroupIds);
+		list.scrollTop = snapshot.scrollTop;
+		list.setFocus(this.listIndexesForKeys(snapshot.focusKeys));
+		list.setSelection(this.listIndexesForKeys(snapshot.selectionKeys));
+	}
+
+	private listIndexesForKeys(keys: readonly string[]): number[] {
+		return keys.flatMap(key => {
+			const index = this.renderedItems.findIndex(item => this.listItemKey(item) === key);
+			return index === -1 ? [] : [index];
+		});
+	}
+
+	private listItemKey(item: IOpencodeListItem): string {
+		if (item.kind === "group") {
+			return `group:${item.group.id}`;
+		}
+
+		return `session:${item.session.id}`;
 	}
 
 	private renderStateView(): void {
@@ -429,10 +510,10 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 			return;
 		}
 
-		if (this.sessionsService.state.error) {
+		if (this.isSessionsStreamDisconnected()) {
 			indicator.style.opacity = "1";
 			indicator.style.background = "var(--vscode-errorForeground)";
-			indicator.title = this.isBackendNotRunningError(this.sessionsService.state.error) ? "OpenCode backend not running" : "Sessions stream reconnecting";
+			indicator.title = this.sessionsService.state.error && this.isBackendNotRunningError(this.sessionsService.state.error) ? "OpenCode backend not running" : "Sessions stream disconnected";
 			return;
 		}
 
@@ -445,6 +526,20 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 
 		indicator.style.opacity = "0";
 		indicator.title = "Sessions stream connected";
+	}
+
+	private isSessionsStreamDisconnected(): boolean {
+		const connectionService = this.connectionService();
+		if (connectionService) {
+			return !this.sessionsService.state.loading && !connectionService.connectionConnected;
+		}
+
+		return !!this.sessionsService.state.error && this.isStreamDisconnectError(this.sessionsService.state.error);
+	}
+
+	private isStreamDisconnectError(error: string): boolean {
+		const message = error.toLocaleLowerCase();
+		return message.includes("sse") || message.includes("event stream") || message.includes("network") || message.includes("disconnect") || this.isBackendNotRunningError(error);
 	}
 
 	private isBackendNotRunningError(error: string): boolean {
@@ -540,11 +635,38 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 	}
 
 	private openSession(element: unknown): void {
+		if (this.isOpencodeGroupListItem(element)) {
+			this.toggleGroupCollapse(element.group.id);
+			return;
+		}
+
 		if (!this.isOpencodeSessionListItem(element)) {
 			return;
 		}
 
 		this._navigate?.(element.session.id);
+	}
+
+	private toggleGroupCollapse(groupId: SessionsGroupId): void {
+		if (this.collapsedGroupIds.has(groupId)) {
+			this.collapsedGroupIds.delete(groupId);
+		} else {
+			this.collapsedGroupIds.add(groupId);
+		}
+
+		this.renderSessions();
+	}
+
+	private connectionService(): OpencodeSessionsService | undefined {
+		if (this.sessionsService instanceof OpencodeSessionsService) {
+			return this.sessionsService;
+		}
+
+		return undefined;
+	}
+
+	private isOpencodeGroupListItem(element: unknown): element is Extract<IOpencodeListItem, { readonly kind: "group" }> {
+		return this.isRecord(element) && element.kind === "group" && this.isRecord(element.group) && typeof element.group.id === "string";
 	}
 
 	private isOpencodeSessionListItem(element: unknown): element is Extract<IOpencodeListItem, { readonly kind: "session" }> {
