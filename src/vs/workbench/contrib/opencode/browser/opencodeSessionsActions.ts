@@ -6,13 +6,20 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { localize2 } from '../../../../nls.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ContextKeyExpr, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import type { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import type { IView } from '../../../common/views.js';
 import { IViewsService } from '../../../services/views/common/viewsService.js';
+import type { IOpencodeSessionsControl } from '../common/opencodeSessionsTypes.js';
 import { IOpencodeSessionsService, OpencodeSessionsViewerOrientation } from '../common/opencodeSessionsTypes.js';
+import { OpencodeSessionsService } from './opencodeSessionsService.js';
 
 export const OPENCODE_SESSIONS_CATEGORY = localize2('opencode.sessions.category', "OpenCode Sessions");
 
@@ -29,7 +36,60 @@ export const OpencodeSessionsViewerOrientationContext = new RawContextKey<Openco
 interface IOpencodeSessionsView extends IView {
     getSessionsOrientation?(): OpencodeSessionsViewerOrientation | undefined;
     setSessionsOrientation?(orientation: OpencodeSessionsViewerOrientation): void | Promise<void>;
+    getSessionsControl?(): IOpencodeSessionsControl | undefined;
+    navigateToSession?(sessionId: string): void;
     collapseAllSections?(): void;
+}
+
+interface IOpencodeSessionCommandContext {
+    readonly id: string;
+    readonly title: string;
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+    if (error instanceof Error) {
+        return error.message;
+    }
+
+    return String(error);
+}
+
+function sessionContext(service: IOpencodeSessionsService, args: readonly unknown[]): IOpencodeSessionCommandContext | undefined {
+    const candidate = args[0];
+    if (typeof candidate === 'string') {
+        const session = service.state.sessions.find(item => item.id === candidate);
+        return {
+            id: candidate,
+            title: session?.title ?? (typeof args[1] === 'string' ? args[1] : candidate),
+        };
+    }
+
+    const session = record(candidate) && record(candidate.session) ? candidate.session : candidate;
+    if (!record(session) || typeof session.id !== 'string') {
+        return undefined;
+    }
+
+    const knownSession = service.state.sessions.find(item => item.id === session.id);
+    return {
+        id: session.id,
+        title: knownSession?.title ?? (typeof session.title === 'string' ? session.title : session.id),
+    };
+}
+
+function optimisticSessionsService(service: IOpencodeSessionsService): OpencodeSessionsService | undefined {
+    if (service instanceof OpencodeSessionsService) {
+        return service;
+    }
+
+    return undefined;
+}
+
+function notifyError(notificationService: INotificationService, message: string, error: unknown): void {
+    notificationService.error(`${message}: ${errorMessage(error)}`);
 }
 
 const SHOW_SESSIONS_SIDEBAR_ACTION = {
@@ -226,11 +286,33 @@ registerAction2(class DeleteSessionAction extends Action2 {
     }
 
     async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
-        if (typeof args[0] !== 'string') {
+        const service = accessor.get(IOpencodeSessionsService);
+        const context = sessionContext(service, args);
+        if (!context) {
             return;
         }
 
-        await accessor.get(IOpencodeSessionsService).deleteSession(args[0]);
+        const dialogService = accessor.get(IDialogService);
+        const notificationService = accessor.get(INotificationService);
+        const logService = accessor.get(ILogService);
+        const confirmation = await dialogService.confirm({
+            message: 'Delete session?',
+            detail: context.title,
+            primaryButton: 'Delete',
+            type: 'warning',
+        });
+        if (!confirmation.confirmed) {
+            return;
+        }
+
+        const rollback = optimisticSessionsService(service)?.applyOptimisticDelete(context.id);
+        try {
+            await service.deleteSession(context.id);
+        } catch (error) {
+            rollback?.();
+            logService.error('[OpenCode] Failed to delete session', error);
+            notifyError(notificationService, 'Failed to delete session', error);
+        }
     }
 });
 
@@ -244,11 +326,30 @@ registerAction2(class RenameSessionAction extends Action2 {
     }
 
     async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
-        if (typeof args[0] !== 'string' || typeof args[1] !== 'string') {
+        const service = accessor.get(IOpencodeSessionsService);
+        const context = sessionContext(service, args);
+        if (!context) {
             return;
         }
 
-        await accessor.get(IOpencodeSessionsService).renameSession(args[0], args[1]);
+        const newTitle = (await accessor.get(IQuickInputService).input({
+            value: context.title,
+            prompt: 'Rename session',
+        }))?.trim();
+        if (!newTitle || newTitle === context.title) {
+            return;
+        }
+
+        const notificationService = accessor.get(INotificationService);
+        const logService = accessor.get(ILogService);
+        const rollback = optimisticSessionsService(service)?.applyOptimisticRename(context.id, newTitle);
+        try {
+            await service.renameSession(context.id, newTitle);
+        } catch (error) {
+            rollback?.();
+            logService.error('[OpenCode] Failed to rename session', error);
+            notifyError(notificationService, 'Failed to rename session', error);
+        }
     }
 });
 
@@ -262,11 +363,22 @@ registerAction2(class ShareSessionAction extends Action2 {
     }
 
     async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
-        if (typeof args[0] !== 'string') {
+        const service = accessor.get(IOpencodeSessionsService);
+        const context = sessionContext(service, args);
+        if (!context) {
             return;
         }
 
-        await accessor.get(IOpencodeSessionsService).shareSession(args[0]);
+        const clipboardService = accessor.get(IClipboardService);
+        const notificationService = accessor.get(INotificationService);
+        const logService = accessor.get(ILogService);
+        try {
+            await clipboardService.writeText(await service.shareSession(context.id));
+            notificationService.info('Share URL copied');
+        } catch (error) {
+            logService.error('[OpenCode] Failed to share session', error);
+            notifyError(notificationService, 'Failed to share session', error);
+        }
     }
 });
 
@@ -280,11 +392,37 @@ registerAction2(class ForkSessionAction extends Action2 {
     }
 
     async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
-        if (typeof args[0] !== 'string') {
+        const service = accessor.get(IOpencodeSessionsService);
+        const context = sessionContext(service, args);
+        if (!context) {
             return;
         }
 
-        await accessor.get(IOpencodeSessionsService).forkSession(args[0]);
+        const dialogService = accessor.get(IDialogService);
+        const notificationService = accessor.get(INotificationService);
+        const logService = accessor.get(ILogService);
+        const confirmation = await dialogService.confirm({
+            message: 'Fork session?',
+            detail: context.title,
+            primaryButton: 'Fork',
+            type: 'warning',
+        });
+        if (!confirmation.confirmed) {
+            return;
+        }
+
+        const commandService = accessor.get(ICommandService);
+        try {
+            const newId = await service.forkSession(context.id);
+            await commandService.executeCommand(SHOW_SESSIONS_SIDEBAR_ACTION.id);
+            const view = accessor.get(IViewsService).getViewWithId<IOpencodeSessionsView>(OPENCODE_CHAT_VIEW_ID);
+            if (!view?.getSessionsControl?.()?.reveal(newId)) {
+                view?.navigateToSession?.(newId);
+            }
+        } catch (error) {
+            logService.error('[OpenCode] Failed to fork session', error);
+            notifyError(notificationService, 'Failed to fork session', error);
+        }
     }
 });
 

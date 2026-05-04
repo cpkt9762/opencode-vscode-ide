@@ -362,6 +362,34 @@ export class OpencodeSessionsService
 		return session.id;
 	}
 
+	applyOptimisticDelete(id: string): () => void {
+		const sessions = this.state.sessions;
+		const status = this.state.status;
+		this.deleteSessionFromState(id);
+		this.onDidChangeSessionsEmitter.fire();
+		return () => {
+			this.state.sessions = sessions;
+			this.state.status = status;
+			this.onDidChangeSessionsEmitter.fire();
+		};
+	}
+
+	applyOptimisticRename(id: string, title: string): () => void {
+		const sessions = this.state.sessions;
+		this.state.sessions = this.state.sessions.map((session) => {
+			if (session.id !== id) {
+				return session;
+			}
+
+			return { ...session, title };
+		});
+		this.onDidChangeSessionsEmitter.fire();
+		return () => {
+			this.state.sessions = sessions;
+			this.onDidChangeSessionsEmitter.fire();
+		};
+	}
+
 	override dispose(): void {
 		this.stop();
 		super.dispose();

@@ -433,4 +433,85 @@ suite("OpencodeSessionsService", () => {
 			workspace.dispose();
 		}
 	});
+
+	test("optimistic delete removes session and rollback restores state", async () => {
+		const workspace = createWorkspaceHarness("/workspace/a");
+		const calls: string[] = [];
+		const service = createService({
+			workspace,
+			fetchFn: createFetch(
+				{
+					"http://127.0.0.1:4101": {
+						sessions: [session("s1"), session("s2")],
+						status: { s1: "idle", s2: "busy" },
+					},
+				},
+				calls,
+			),
+		});
+
+		try {
+			await service.start();
+			let emissions = 0;
+			const listener = service.onDidChangeSessions(() => (emissions += 1));
+
+			const rollback = service.applyOptimisticDelete("s1");
+
+			assert.deepStrictEqual(
+				service.state.sessions.map((item) => item.id),
+				["s2"],
+			);
+			assert.deepStrictEqual(service.state.status, { s2: "busy" });
+			assert.strictEqual(emissions, 1);
+
+			rollback();
+
+			assert.deepStrictEqual(
+				service.state.sessions.map((item) => item.id),
+				["s1", "s2"],
+			);
+			assert.deepStrictEqual(service.state.status, { s1: "idle", s2: "busy" });
+			assert.strictEqual(emissions, 2);
+			listener.dispose();
+		} finally {
+			service.dispose();
+			workspace.dispose();
+		}
+	});
+
+	test("optimistic rename updates title and rollback restores state", async () => {
+		const workspace = createWorkspaceHarness("/workspace/a");
+		const calls: string[] = [];
+		const service = createService({
+			workspace,
+			fetchFn: createFetch(
+				{
+					"http://127.0.0.1:4101": {
+						sessions: [session("s1", "Original"), session("s2")],
+					},
+				},
+				calls,
+			),
+		});
+
+		try {
+			await service.start();
+			let emissions = 0;
+			const listener = service.onDidChangeSessions(() => (emissions += 1));
+
+			const rollback = service.applyOptimisticRename("s1", "Renamed");
+
+			assert.strictEqual(service.state.sessions[0].title, "Renamed");
+			assert.strictEqual(emissions, 1);
+
+			rollback();
+
+			assert.strictEqual(service.state.sessions[0].title, "Original");
+			assert.strictEqual(emissions, 2);
+			listener.dispose();
+		} finally {
+			service.dispose();
+			workspace.dispose();
+		}
+	});
 });
