@@ -4,14 +4,16 @@
 
 // biome-ignore lint/style/useNodejsImportProtocol: browser unit tests load assert through the test runner bundle.
 import * as assert from "assert";
-import { Emitter } from "../../../../../base/common/event.js";
+import { bufferToStream, VSBuffer } from "../../../../../base/common/buffer.js";
+import { Emitter, Event } from "../../../../../base/common/event.js";
 import { URI } from "../../../../../base/common/uri.js";
 import type { IConfigurationService } from "../../../../../platform/configuration/common/configuration.js";
 import type { ILogService } from "../../../../../platform/log/common/log.js";
+import type { IRequestContext } from "../../../../../base/parts/request/common/request.js";
+import type { IRequestService } from "../../../../../platform/request/common/request.js";
 import type { IWorkspaceContextService } from "../../../../../platform/workspace/common/workspace.js";
 import type {
 	OpencodeSessionsEventStreamFactory,
-	OpencodeSessionsFetchFn,
 } from "../../browser/opencodeSessionsService.js";
 import { OpencodeSessionsService } from "../../browser/opencodeSessionsService.js";
 import type {
@@ -171,48 +173,55 @@ function createConfigurationService(): IConfigurationService {
 	} as unknown as IConfigurationService;
 }
 
-function requestUrl(input: RequestInfo | URL): string {
-	if (typeof input === "string") {
-		return input;
-	}
-
-	if (input instanceof URL) {
-		return input.toString();
-	}
-
-	return input.url;
+function jsonContext(body: unknown, status = 200): IRequestContext {
+	return {
+		res: {
+			statusCode: status,
+			headers: { "content-type": "application/json" },
+		},
+		stream: bufferToStream(VSBuffer.fromString(JSON.stringify(body))),
+	};
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
-	return new Response(JSON.stringify(body), {
-		status,
-		headers: { "content-type": "application/json" },
-	});
-}
-
-function createFetch(
+function createRequestService(
 	backends: Record<string, FetchBackend>,
 	calls: string[],
-): OpencodeSessionsFetchFn {
-	return async (input, init) => {
-		const url = new URL(requestUrl(input));
-		const method = (init?.method ?? "GET").toUpperCase();
-		calls.push(`${method} ${url.origin}${url.pathname}`);
+): IRequestService {
+	return {
+		_serviceBrand: undefined,
+		onDidCompleteRequest: Event.None,
+		async request(options) {
+			const url = new URL(options.url ?? "");
+			const method = (options.type ?? "GET").toUpperCase();
+			calls.push(`${method} ${url.origin}${url.pathname}`);
 
-		const backend = backends[url.origin];
-		if (!backend) {
-			return jsonResponse({ error: `missing backend for ${url.origin}` }, 404);
-		}
+			const backend = backends[url.origin];
+			if (!backend) {
+				return jsonContext({ error: `missing backend for ${url.origin}` }, 404);
+			}
 
-		if (method === "GET" && url.pathname === "/session") {
-			return jsonResponse(backend.sessions);
-		}
+			if (method === "GET" && url.pathname === "/session") {
+				return jsonContext(backend.sessions);
+			}
 
-		if (method === "GET" && url.pathname === "/session/status") {
-			return jsonResponse(backend.status ?? {});
-		}
+			if (method === "GET" && url.pathname === "/session/status") {
+				return jsonContext(backend.status ?? {});
+			}
 
-		return jsonResponse({ error: `${method} ${url.pathname}` }, 404);
+			return jsonContext({ error: `${method} ${url.pathname}` }, 404);
+		},
+		async resolveProxy() {
+			return undefined;
+		},
+		async lookupAuthorization() {
+			return undefined;
+		},
+		async lookupKerberosAuthorization() {
+			return undefined;
+		},
+		async loadCertificates() {
+			return [];
+		},
 	};
 }
 
@@ -229,7 +238,7 @@ function createIdleEventStreamFactory(
 
 function createService(input: {
 	readonly workspace: WorkspaceHarness;
-	readonly fetchFn: OpencodeSessionsFetchFn;
+	readonly requestService: IRequestService;
 	readonly eventStreamFactory?: OpencodeSessionsEventStreamFactory;
 	readonly ports?: Record<string, number>;
 }): OpencodeSessionsService {
@@ -240,7 +249,7 @@ function createService(input: {
 		),
 		input.workspace.service,
 		createConfigurationService(),
-		input.fetchFn,
+		input.requestService,
 		input.eventStreamFactory ?? createIdleEventStreamFactory(),
 	);
 }
@@ -272,7 +281,7 @@ suite("OpencodeSessionsService", () => {
 		const calls: string[] = [];
 		const service = createService({
 			workspace,
-			fetchFn: createFetch(
+			requestService: createRequestService(
 				{
 					"http://127.0.0.1:4101": {
 						sessions: [session("s1"), session("s2"), session("s3")],
@@ -302,7 +311,7 @@ suite("OpencodeSessionsService", () => {
 		const streams: TestEventStream[] = [];
 		const service = createService({
 			workspace,
-			fetchFn: createFetch(
+			requestService: createRequestService(
 				{ "http://127.0.0.1:4101": { sessions: [] } },
 				calls,
 			),
@@ -356,7 +365,7 @@ suite("OpencodeSessionsService", () => {
 		};
 		const service = createService({
 			workspace,
-			fetchFn: createFetch(
+			requestService: createRequestService(
 				{ "http://127.0.0.1:4101": { sessions: [] } },
 				calls,
 			),
@@ -394,7 +403,7 @@ suite("OpencodeSessionsService", () => {
 		let backendUp = true;
 		const service = createService({
 			workspace,
-			fetchFn: createFetch(
+			requestService: createRequestService(
 				{ "http://127.0.0.1:4101": { sessions: [] } },
 				calls,
 			),
@@ -444,7 +453,7 @@ suite("OpencodeSessionsService", () => {
 		const calls: string[] = [];
 		const service = createService({
 			workspace,
-			fetchFn: createFetch(
+			requestService: createRequestService(
 				{
 					"http://127.0.0.1:4101": {
 						sessions: [session("a1"), session("a2"), session("a3")],
@@ -491,7 +500,7 @@ suite("OpencodeSessionsService", () => {
 		const calls: string[] = [];
 		const service = createService({
 			workspace,
-			fetchFn: createFetch(
+			requestService: createRequestService(
 				{
 					"http://127.0.0.1:4101": {
 						sessions: [session("s1"), session("s2")],
@@ -536,7 +545,7 @@ suite("OpencodeSessionsService", () => {
 		const calls: string[] = [];
 		const service = createService({
 			workspace,
-			fetchFn: createFetch(
+			requestService: createRequestService(
 				{
 					"http://127.0.0.1:4101": {
 						sessions: [session("s1", "Original"), session("s2")],

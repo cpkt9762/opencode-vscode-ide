@@ -2,10 +2,14 @@
  *  Copyright (c) pingzi. Licensed under the Apache License, Version 2.0.
  *--------------------------------------------------------------------------------------------*/
 
+import type { VSBuffer, VSBufferReadableStream } from "../../../../base/common/buffer.js";
+import { CancellationToken, CancellationTokenSource } from "../../../../base/common/cancellation.js";
 import { Emitter, type Event } from "../../../../base/common/event.js";
 import { Disposable } from "../../../../base/common/lifecycle.js";
+import type { IHeaders, IRequestContext } from "../../../../base/parts/request/common/request.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
+import { asJson, IRequestService, isSuccess } from "../../../../platform/request/common/request.js";
 import { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
 import {
 	createSSEStreamReader,
@@ -29,7 +33,7 @@ export type OpencodeSessionsFetchFn = (
 export type OpencodeSessionsEventStreamFactory = (
 	url: string,
 	signal: AbortSignal,
-	fetchFn: OpencodeSessionsFetchFn,
+	requestService: IRequestService,
 ) => Promise<AsyncIterable<IOpencodeSessionEvent | string>>;
 
 const refreshDebounceMs = 400;
@@ -165,36 +169,128 @@ function shareUrl(value: unknown): string | undefined {
 	return value.share.url;
 }
 
+function requestHeaders(headers: HeadersInit | undefined): IHeaders | undefined {
+	if (!headers) {
+		return undefined;
+	}
+
+	if (headers instanceof Headers) {
+		const result: IHeaders = {};
+		headers.forEach((value, key) => {
+			result[key] = value;
+		});
+		return result;
+	}
+
+	return Array.isArray(headers) ? Object.fromEntries(headers) : headers;
+}
+
+function requestData(body: BodyInit | null | undefined): string | undefined {
+	if (body === undefined || body === null) {
+		return undefined;
+	}
+
+	if (typeof body === "string") {
+		return body;
+	}
+
+	if (body instanceof URLSearchParams) {
+		return body.toString();
+	}
+
+	throw new Error("OpenCode API requests only support string request bodies");
+}
+
+function headerValue(headers: IHeaders, name: string): string | undefined {
+	const value = Object.entries(headers).find(
+		([key]) => key.toLowerCase() === name,
+	)?.[1];
+	return Array.isArray(value) ? value.join(",") : value;
+}
+
+function toReadableStream(
+	stream: VSBufferReadableStream,
+	signal: AbortSignal,
+): ReadableStream<Uint8Array> {
+	return new ReadableStream<Uint8Array>({
+		start(controller) {
+			let settled = false;
+			const cleanup = () => {
+				stream.removeListener("data", onData);
+				stream.removeListener("error", onError);
+				stream.removeListener("end", onEnd);
+				signal.removeEventListener("abort", onAbort);
+			};
+			const close = () => {
+				if (settled) {
+					return;
+				}
+
+				settled = true;
+				cleanup();
+				controller.close();
+			};
+			const fail = (error: Error) => {
+				if (settled) {
+					return;
+				}
+
+				settled = true;
+				cleanup();
+				controller.error(error);
+			};
+			const onData = (data: VSBuffer) => controller.enqueue(data.buffer);
+			const onError = (error: Error) => fail(error);
+			const onEnd = () => close();
+			const onAbort = () => {
+				stream.destroy();
+				fail(new DOMException("Aborted", "AbortError"));
+			};
+
+			stream.on("error", onError);
+			stream.on("end", onEnd);
+			stream.on("data", onData);
+			signal.addEventListener("abort", onAbort, { once: true });
+			if (signal.aborted) {
+				onAbort();
+				return;
+			}
+
+			stream.resume();
+		},
+		cancel() {
+			stream.destroy();
+		},
+	});
+}
+
 async function defaultEventStreamFactory(
 	url: string,
 	signal: AbortSignal,
-	fetchFn: OpencodeSessionsFetchFn,
+	requestService: IRequestService,
 ): Promise<AsyncIterable<IOpencodeSessionEvent | string>> {
-	// Task 4 chose fetch + ReadableStream instead of native EventSource so the service can inspect
-	// status/content-type and keep cancellation under AbortController control.
-	const response = await fetchFn(url, {
+	const cts = new CancellationTokenSource();
+	signal.addEventListener("abort", () => cts.cancel(), { once: true });
+	const context = await requestService.request({
+		type: "GET",
+		url,
 		headers: { Accept: "text/event-stream" },
-		signal,
-	});
-	if (!response.ok) {
+		callSite: "opencode.sessions.sse",
+	}, cts.token);
+	if (!isSuccess(context)) {
 		throw new Error(
-			`OpenCode sessions SSE failed with HTTP ${response.status}`,
+			`OpenCode sessions SSE failed with HTTP ${context.res.statusCode ?? "unknown"}`,
 		);
 	}
 
-	if (!response.headers.get("content-type")?.includes("text/event-stream")) {
+	const contentType = headerValue(context.res.headers, "content-type");
+	if (!contentType?.includes("text/event-stream")) {
 		throw new Error(
-			`OpenCode sessions SSE returned non-SSE content type: ${response.headers.get("content-type") ?? "missing"}`,
+			`OpenCode sessions SSE returned non-SSE content type: ${contentType ?? "missing"}`,
 		);
 	}
 
-	if (!response.body) {
-		throw new Error(
-			"OpenCode sessions SSE response did not include a readable body",
-		);
-	}
-
-	return createSSEStreamReader(response.body);
+	return createSSEStreamReader(toReadableStream(context.stream, signal));
 }
 
 export class OpencodeSessionsService
@@ -237,6 +333,7 @@ export class OpencodeSessionsService
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	private sseAbort: AbortController | undefined;
 	private sseConnected = false;
+	private readonly requestService: IRequestService;
 
 	get connectionConnected(): boolean {
 		return this.sseConnected;
@@ -247,13 +344,16 @@ export class OpencodeSessionsService
 		private readonly spaProxyService: ISpaProxyService,
 		private readonly contextService: IWorkspaceContextService,
 		configurationService: IConfigurationService,
-		private readonly fetchFn: OpencodeSessionsFetchFn = globalThis.fetch.bind(
-			globalThis,
-		),
+		requestService: IRequestService | undefined = undefined,
 		private readonly eventStreamFactory: OpencodeSessionsEventStreamFactory = defaultEventStreamFactory,
 	) {
 		super();
 		void configurationService;
+		if (!requestService) {
+			throw new Error("OpenCode sessions service requires IRequestService");
+		}
+
+		this.requestService = requestService;
 		this._register(
 			this.contextService.onDidChangeWorkspaceFolders(() =>
 				this.onWorkspaceSwitch(),
@@ -506,26 +606,28 @@ export class OpencodeSessionsService
 	}
 
 	private async fetchJson(path: string, init?: RequestInit): Promise<unknown> {
-		const response = await this.fetchResponse(path, init);
-		const value: unknown = await response.json();
-		return value;
+		return asJson<unknown>(await this.fetchResponse(path, init));
 	}
 
 	private async fetchResponse(
 		path: string,
 		init?: RequestInit,
-	): Promise<Response> {
-		const response = await this.fetchFn(
-			`${await this.getApiBaseUrl()}${path}`,
-			init,
-		);
-		if (!response.ok) {
+	): Promise<IRequestContext> {
+		const method = (init?.method ?? "GET").toUpperCase();
+		const context = await this.requestService.request({
+			type: method,
+			url: `${await this.getApiBaseUrl()}${path}`,
+			headers: requestHeaders(init?.headers),
+			data: requestData(init?.body),
+			callSite: "opencode.sessions.api",
+		}, CancellationToken.None);
+		if (!isSuccess(context)) {
 			throw new Error(
-				`OpenCode API ${(init?.method ?? "GET").toUpperCase()} ${path} failed with HTTP ${response.status}`,
+				`OpenCode API ${method} ${path} failed with HTTP ${context.res.statusCode ?? "unknown"}`,
 			);
 		}
 
-		return response;
+		return context;
 	}
 
 	private async loadSessionsAndStatus(): Promise<void> {
@@ -568,7 +670,7 @@ export class OpencodeSessionsService
 			const stream = await this.eventStreamFactory(
 				`${await this.getApiBaseUrl()}/event`,
 				controller.signal,
-				this.fetchFn,
+				this.requestService,
 			);
 			if (!this.isCurrentSSE(run, controller)) {
 				return;
@@ -751,3 +853,4 @@ ILogService(OpencodeSessionsService, "", 0);
 ISpaProxyService(OpencodeSessionsService, "", 1);
 IWorkspaceContextService(OpencodeSessionsService, "", 2);
 IConfigurationService(OpencodeSessionsService, "", 3);
+IRequestService(OpencodeSessionsService, "", 4);
