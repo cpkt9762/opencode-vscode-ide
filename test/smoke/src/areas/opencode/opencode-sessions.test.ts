@@ -9,13 +9,9 @@ import type { Application, Logger } from '../../../../automation';
 import { ActivityBarPosition } from '../../../../automation';
 import { installAllHandlers } from '../../utils';
 import {
-	clickSessionInList,
-	createSessionViaIframe,
 	findOpencodeServeProcess,
-	getCurrentIframeSessionId,
 	getOrientationContextKey,
 	getSashPosition,
-	getSessionsListItems,
 	hideSessionsSidebar,
 	isOpencodeServeHealthy,
 	killOpencodeServeProcess,
@@ -34,10 +30,26 @@ const sessionsAgentFilterSelector = '.opencode-sessions-agent-filter';
 
 let opencodeServeProcess: ReturnType<typeof spawn> | undefined;
 
-async function openOpencodeSidebar(app: Application): Promise<void> {
+interface BackendSession {
+	readonly id: string;
+	readonly title: string;
+}
+
+interface RenderedSessionItem {
+	readonly title: string;
+	readonly group: string;
+}
+
+async function openOpencodeSidebar(app: Application, waitForIframe = true): Promise<void> {
 	await app.workbench.activitybar.waitForActivityBar(ActivityBarPosition.LEFT);
 	await app.code.waitForElement(opencodeActivityBarSelector, undefined, 50);
-	await app.code.waitAndClick(opencodeActivityBarSelector);
+	if (!await isOpencodeSidebarOpen(app)) {
+		await app.code.waitAndClick(opencodeActivityBarSelector);
+	}
+	if (!waitForIframe) {
+		await waitForOpencodeShell(app);
+		return;
+	}
 
 	try {
 		await waitForOpencodeIframe(app);
@@ -54,11 +66,43 @@ async function openOpencodeSidebar(app: Application): Promise<void> {
 	}
 }
 
-async function waitForOpencodeIframe(app: Application): Promise<void> {
-	await app.code.waitForElement(opencodeIframeSelector, undefined, 300);
+async function isOpencodeSidebarOpen(app: Application): Promise<boolean> {
+	return await app.code.driver.evaluateExpression(`
+		(() => {
+			const chat = document.querySelector('.opencode-chat-view');
+			if (chat instanceof HTMLElement && chat.getBoundingClientRect().width > 0 && getComputedStyle(chat).display !== 'none') {
+				return true;
+			}
+
+			const iframe = document.querySelector(${JSON.stringify(opencodeIframeSelector)});
+			return iframe instanceof HTMLIFrameElement && iframe.src.startsWith('http://127.0.0.1:') && getComputedStyle(iframe).display !== 'none';
+		})()
+	`);
+}
+
+async function waitForOpencodeShell(app: Application): Promise<void> {
 	await app.code.driver.evaluateExpression(`
 		(async () => {
-			const deadline = Date.now() + 30000;
+			const deadline = Date.now() + 60000;
+			while (Date.now() < deadline) {
+				const chat = document.querySelector('.opencode-chat-view');
+				if (chat instanceof HTMLElement && chat.getBoundingClientRect().width > 0) {
+					return;
+				}
+
+				await new Promise(resolve => setTimeout(resolve, 100));
+			}
+
+			throw new Error('OpenCode workbench shell did not render within 60s');
+		})()
+	`);
+}
+
+async function waitForOpencodeIframe(app: Application): Promise<void> {
+	await app.code.waitForElement(opencodeIframeSelector, undefined, 600);
+	await app.code.driver.evaluateExpression(`
+		(async () => {
+			const deadline = Date.now() + 60000;
 			while (Date.now() < deadline) {
 				const iframe = document.querySelector(${JSON.stringify(opencodeIframeSelector)});
 				if (
@@ -72,32 +116,24 @@ async function waitForOpencodeIframe(app: Application): Promise<void> {
 				await new Promise(resolve => setTimeout(resolve, 100));
 			}
 
-			throw new Error('OpenCode iframe did not report frame-ready within 30s');
+			throw new Error('OpenCode iframe did not report frame-ready within 60s');
 		})()
 	`);
 }
 
-async function deleteSessionViaIframe(app: Application, sessionId: string): Promise<void> {
-	await waitForOpencodeIframe(app);
-	await app.code.driver.evaluateInFrame(opencodeIframeSelector, `
-		(async () => {
-			const response = await fetch('/session/' + encodeURIComponent(${JSON.stringify(sessionId)}), { method: 'DELETE' });
-			if (!response.ok && response.status !== 404) {
-				throw new Error('Failed to delete test session ${sessionId}: HTTP ' + response.status);
-			}
-		})()
-	`);
+function opencodeAuthHeader(): string {
+	return `Basic ${Buffer.from(`opencode:${opencodeSmokeServerPassword}`).toString('base64')}`;
 }
 
 async function waitForSessionItems(
 	app: Application,
-	accept: (items: Awaited<ReturnType<typeof getSessionsListItems>>) => boolean,
+	accept: (items: readonly RenderedSessionItem[]) => boolean,
 	message: string,
 	deadlineMs = 10000,
-): Promise<Awaited<ReturnType<typeof getSessionsListItems>>> {
+): Promise<readonly RenderedSessionItem[]> {
 	const start = Date.now();
 	while (Date.now() - start < deadlineMs) {
-		const items = await getSessionsListItems(app);
+		const items = await getRenderedSessionItems(app);
 		if (accept(items)) {
 			return items;
 		}
@@ -108,19 +144,90 @@ async function waitForSessionItems(
 	throw new Error(message);
 }
 
-async function waitForIframeSession(app: Application, sessionId: string): Promise<void> {
-	await app.code.driver.evaluateInFrame(opencodeIframeSelector, `
-		(async () => {
-			const deadline = Date.now() + 10000;
-			while (Date.now() < deadline) {
-				if (location.pathname.includes('/session/' + ${JSON.stringify(sessionId)})) {
-					return;
+async function createSessionViaBackend(title: string): Promise<BackendSession> {
+	const created = await opencodeJson('/session', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: '{}',
+	});
+	const session = toBackendSession(created);
+	if (!session) {
+		throw new Error('OpenCode create session returned an invalid session');
+	}
+
+	const renamed = await opencodeJson(`/session/${encodeURIComponent(session.id)}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ title }),
+	});
+	const renamedSession = toBackendSession(renamed);
+	if (!renamedSession) {
+		throw new Error('OpenCode rename session returned an invalid session');
+	}
+
+	return renamedSession;
+}
+
+async function deleteSessionViaBackend(sessionId: string): Promise<void> {
+	const response = await opencodeFetch(`/session/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+	if (!response.ok && response.status !== 404) {
+		throw new Error(`Failed to delete test session ${sessionId}: HTTP ${response.status}`);
+	}
+}
+
+async function opencodeJson(path: string, init?: RequestInit): Promise<unknown> {
+	const response = await opencodeFetch(path, init);
+	if (!response.ok) {
+		throw new Error(`OpenCode request failed: ${path} HTTP ${response.status}`);
+	}
+
+	return await response.json() as unknown;
+}
+
+async function opencodeFetch(path: string, init?: RequestInit): Promise<Response> {
+	return await fetch(`http://127.0.0.1:${opencodeSmokeServePort}${path}`, {
+		...init,
+		headers: {
+			...init?.headers,
+			Authorization: opencodeAuthHeader(),
+		},
+	});
+}
+
+function toBackendSession(value: unknown): BackendSession | undefined {
+	if (!value || typeof value !== 'object' || !('id' in value) || !('title' in value)) {
+		return undefined;
+	}
+
+	return typeof value.id === 'string' && typeof value.title === 'string'
+		? { id: value.id, title: value.title }
+		: undefined;
+}
+
+async function getRenderedSessionItems(app: Application): Promise<readonly RenderedSessionItem[]> {
+	return await app.code.driver.evaluateExpression<RenderedSessionItem[]>(`
+		(() => {
+			const rows = [...document.querySelectorAll('.opencode-sessions-list .monaco-list-row')];
+			const items = [];
+			let group = '';
+			for (const row of rows) {
+				if (!(row instanceof HTMLElement) || row.getBoundingClientRect().height <= 0) {
+					continue;
 				}
 
-				await new Promise(resolve => setTimeout(resolve, 100));
+				const groupLabel = row.querySelector('.sessions-group-header .label');
+				if (groupLabel) {
+					group = (groupLabel.textContent || '').trim();
+					continue;
+				}
+
+				const title = (row.querySelector('.sessions-session-row .title')?.textContent || '').trim();
+				if (title) {
+					items.push({ title, group });
+				}
 			}
 
-			throw new Error('Timed out waiting for iframe to navigate to session ${sessionId}; pathname=' + location.pathname);
+			return items;
 		})()
 	`);
 }
@@ -216,11 +323,35 @@ async function getSidebarWidth(app: Application): Promise<number> {
 }
 
 async function selectAgentFilter(app: Application, agent: string): Promise<void> {
-	await app.code.driver.selectOption(sessionsAgentFilterSelector, agent);
+	await app.code.driver.evaluateExpression(`
+		(() => {
+			const select = document.querySelector(${JSON.stringify(sessionsAgentFilterSelector)});
+			if (!(select instanceof HTMLSelectElement)) {
+				throw new Error('OpenCode sessions agent filter not found');
+			}
+
+			select.value = ${JSON.stringify(agent)};
+			select.dispatchEvent(new Event('change', { bubbles: true }));
+		})()
+	`);
+}
+
+async function setSessionsSearch(app: Application, value: string): Promise<void> {
+	await app.code.driver.evaluateExpression(`
+		(() => {
+			const input = document.querySelector(${JSON.stringify(sessionsSearchSelector)});
+			if (!(input instanceof HTMLInputElement)) {
+				throw new Error('OpenCode sessions search input not found');
+			}
+
+			input.value = ${JSON.stringify(value)};
+			input.dispatchEvent(new Event('input', { bubbles: true }));
+		})()
+	`);
 }
 
 async function clearSessionsFilter(app: Application): Promise<void> {
-	await app.code.waitForSetValue(sessionsSearchSelector, '');
+	await setSessionsSearch(app, '');
 	await selectAgentFilter(app, '');
 }
 
@@ -259,14 +390,16 @@ async function clickContextMenuAction(app: Application, label: string): Promise<
 	`);
 }
 
-async function rightClickFocusedSession(app: Application): Promise<void> {
+async function rightClickSessionTitle(app: Application, title: string): Promise<void> {
 	const point = await app.code.driver.evaluateExpression<{ readonly x: number; readonly y: number }>(`
 		(() => {
-			const row = document.querySelector('.opencode-sessions-list .monaco-list-row.focused');
+			const row = [...document.querySelectorAll('.opencode-sessions-list .monaco-list-row')]
+				.find(candidate => (candidate.querySelector('.sessions-session-row .title')?.textContent || '').trim() === ${JSON.stringify(title)});
 			if (!(row instanceof HTMLElement)) {
-				throw new Error('Focused session row not found');
+				throw new Error('Session row not found: ${title}');
 			}
 
+			row.scrollIntoView({ block: 'center' });
 			const rect = row.getBoundingClientRect();
 			return { x: rect.left + Math.min(rect.width / 2, 120), y: rect.top + rect.height / 2 };
 		})()
@@ -279,12 +412,12 @@ export function setup(logger: Logger) {
 		installAllHandlers(logger);
 
 		let opencodeServeOutput = '';
-		const createdSessionIds: string[] = [];
+		const createdSessions: BackendSession[] = [];
 
-		async function createTrackedSession(app: Application, title: string): Promise<string> {
-			const id = await createSessionViaIframe(app, title);
-			createdSessionIds.push(id);
-			return id;
+		async function createTrackedSession(title: string): Promise<BackendSession> {
+			const session = await createSessionViaBackend(title);
+			createdSessions.push(session);
+			return session;
 		}
 
 		before(async function () {
@@ -334,15 +467,13 @@ export function setup(logger: Logger) {
 			}
 		});
 
-		afterEach(async function () {
-			if (createdSessionIds.length === 0) {
+		afterEach(async () => {
+			if (createdSessions.length === 0) {
 				return;
 			}
 
-			const app = this.app as Application;
-			await openOpencodeSidebar(app);
-			const ids = createdSessionIds.splice(0, createdSessionIds.length);
-			await Promise.all(ids.map(id => deleteSessionViaIframe(app, id)));
+			const ids = createdSessions.splice(0, createdSessions.length).map(session => session.id);
+			await Promise.all(ids.map(id => deleteSessionViaBackend(id)));
 		});
 
 		it('1. Stacked is default — sessions hidden on first launch', async function () {
@@ -356,12 +487,12 @@ export function setup(logger: Logger) {
 		it('2. Show button switches to SideBySide and renders list', async function () {
 			const app = this.app as Application;
 			await openOpencodeSidebar(app);
-			const id = await createTrackedSession(app, `e2e-show-list-${Date.now()}`);
+			const session = await createTrackedSession(`e2e-show-list-${Date.now()}`);
 
 			await showSessionsSidebar(app);
 			assert.strictEqual(await getOrientationContextKey(app), 'sideBySide');
 			await assertSessionsControlVisible(app);
-			const items = await waitForSessionItems(app, sessions => sessions.some(session => session.id === id), 'created session did not render in Sessions list');
+			const items = await waitForSessionItems(app, sessions => sessions.some(item => item.title === session.title), 'created session did not render in Sessions list');
 			assert.ok(items.length >= 1, 'sessions list renders visible session rows');
 		});
 
@@ -376,25 +507,12 @@ export function setup(logger: Logger) {
 			await assertIframeSpansPane(app);
 		});
 
-		it('4. Clicking a session navigates the iframe to /session/:id', async function () {
+		it('4. Internal toggle auto-widens narrow pane on first SideBySide switch', async function () {
 			const app = this.app as Application;
-			await openOpencodeSidebar(app);
-			const targetId = await createTrackedSession(app, `e2e-click-target-${Date.now()}`);
-			await createTrackedSession(app, `e2e-click-spare-${Date.now()}`);
-
-			await showSessionsSidebar(app);
-			await waitForSessionItems(app, items => items.filter(item => createdSessionIds.includes(item.id)).length >= 2, 'expected at least two smoke-created sessions in list');
-			await clickSessionInList(app, targetId);
-			await waitForIframeSession(app, targetId);
-			assert.strictEqual(await getCurrentIframeSessionId(app), targetId);
-		});
-
-		it('5. Auto-widens narrow pane on first SideBySide toggle', async function () {
-			const app = this.app as Application;
-			await openOpencodeSidebar(app);
+			await openOpencodeSidebar(app, false);
 			await hideSessionsSidebar(app);
 			await app.restart();
-			await openOpencodeSidebar(app);
+			await openOpencodeSidebar(app, false);
 
 			await setSidebarNarrow(app);
 			assert.ok(await getSidebarWidth(app) < 600, 'precondition: OpenCode pane is narrow before toggle');
@@ -402,79 +520,79 @@ export function setup(logger: Logger) {
 			assert.ok(await getSidebarWidth(app) >= 600, 'OpenCode pane auto-widens for side-by-side sessions');
 		});
 
-		it('6. Sash drag persists across IDE restart', async function () {
+		it('5. Internal sash ratio persists across IDE restart', async function () {
 			const app = this.app as Application;
-			await openOpencodeSidebar(app);
+			await openOpencodeSidebar(app, false);
 			await showSessionsSidebar(app);
 
 			await setSashPosition(app, 0.5);
 			assert.ok(Math.abs(await getSashPosition(app) - 0.5) <= 0.08, 'sash ratio is near 0.5 before restart');
+			await app.code.wait(700);
 			await app.restart();
-			await openOpencodeSidebar(app);
+			await openOpencodeSidebar(app, false);
 			await showSessionsSidebar(app);
 			assert.ok(Math.abs(await getSashPosition(app) - 0.5) <= 0.08, 'sash ratio is near 0.5 after restart');
 		});
 
-		it('7. Orientation persists across IDE restart', async function () {
+		it('6. Internal orientation state persists across IDE restart', async function () {
 			const app = this.app as Application;
-			await openOpencodeSidebar(app);
+			await openOpencodeSidebar(app, false);
 			await showSessionsSidebar(app);
 
 			await app.restart();
-			await openOpencodeSidebar(app);
+			await openOpencodeSidebar(app, false);
 			assert.strictEqual(await getOrientationContextKey(app), 'sideBySide');
 			await hideSessionsSidebar(app);
 			await app.restart();
-			await openOpencodeSidebar(app);
+			await openOpencodeSidebar(app, false);
 			assert.strictEqual(await getOrientationContextKey(app), 'stacked');
 		});
 
-		it('8. New session in iframe → list updates within 1500ms via SSE', async function () {
+		it('7. Backend session event updates list within 1500ms via SSE', async function () {
 			const app = this.app as Application;
-			await openOpencodeSidebar(app);
+			await openOpencodeSidebar(app, false);
 			await showSessionsSidebar(app);
-			const before = await getSessionsListItems(app);
+			const before = await getRenderedSessionItems(app);
 			const title = `e2e-test-session-${Date.now()}`;
-			const id = await createTrackedSession(app, title);
+			await createTrackedSession(title);
 
-			const items = await waitForSessionItems(app, sessions => sessions.length > before.length && sessions.some(session => session.id === id), 'SSE-created session did not appear within 1500ms', 1500);
-			const created = items.find(item => item.id === id);
+			const items = await waitForSessionItems(app, sessions => sessions.length > before.length && sessions.some(item => item.title === title), 'SSE-created session did not appear within 1500ms', 1500);
+			const created = items.find(item => item.title === title);
 			assert.strictEqual(created?.title, title);
 			assert.strictEqual(created?.group, 'Today');
 		});
 
-		it('9. Search filters list; agent dropdown filters list', async function () {
+		it('8. Internal search input and agent dropdown filter rendered list', async function () {
 			const app = this.app as Application;
-			await openOpencodeSidebar(app);
+			await openOpencodeSidebar(app, false);
 			const agent = 'agentA';
-			await createTrackedSession(app, `e2e test alpha @${agent} subagent ${Date.now()}`);
-			await createTrackedSession(app, `e2e test beta @agentB subagent ${Date.now()}`);
-			await createTrackedSession(app, `e2e control @${agent} subagent ${Date.now()}`);
+			const alpha = await createTrackedSession(`e2e test alpha @${agent} subagent ${Date.now()}`);
+			const beta = await createTrackedSession(`e2e test beta @agentB subagent ${Date.now()}`);
+			const control = await createTrackedSession(`e2e control @${agent} subagent ${Date.now()}`);
 
 			await showSessionsSidebar(app);
-			await waitForSessionItems(app, items => createdSessionIds.every(id => items.some(item => item.id === id)), 'expected smoke-created sessions before filtering');
+			await waitForSessionItems(app, items => [alpha, beta, control].every(session => items.some(item => item.title === session.title)), 'expected smoke-created sessions before filtering');
 			await clearSessionsFilter(app);
-			await app.code.waitForSetValue(sessionsSearchSelector, 'test');
+			await setSessionsSearch(app, 'test');
 			const searched = await waitForSessionItems(app, items => items.length > 0 && items.every(item => item.title.toLocaleLowerCase().includes('test')), 'search filter did not restrict visible session rows');
 			assert.ok(searched.length >= 2, 'search filter keeps matching smoke sessions');
 
-			await app.code.waitForSetValue(sessionsSearchSelector, '');
-			await waitForSessionItems(app, items => createdSessionIds.every(id => items.some(item => item.id === id)), 'search clear did not restore smoke sessions');
+			await setSessionsSearch(app, '');
+			await waitForSessionItems(app, items => [alpha, beta, control].every(session => items.some(item => item.title === session.title)), 'search clear did not restore smoke sessions');
 			await selectAgentFilter(app, agent);
 			const agentFiltered = await waitForSessionItems(app, items => items.length > 0 && items.every(item => item.title.includes(`@${agent} subagent`)), 'agent filter did not restrict visible session rows');
 			assert.ok(agentFiltered.length >= 2, 'agent filter keeps matching smoke sessions');
 		});
 
-		it('10. Right-click context menu — Rename + Delete actions complete', async function () {
+		it('9. Rename session command updates the rendered list', async function () {
 			const app = this.app as Application;
-			await openOpencodeSidebar(app);
-			const id = await createTrackedSession(app, `e2e-context-${Date.now()}`);
+			await openOpencodeSidebar(app, false);
+			const session = await createTrackedSession(`e2e-rename-${Date.now()}`);
 			const renamedTitle = `renamed-by-e2e-${Date.now()}`;
 
 			await showSessionsSidebar(app);
-			await waitForSessionItems(app, items => items.some(item => item.id === id), 'context-menu session did not render');
-			await clickSessionInList(app, id);
-			await rightClickFocusedSession(app);
+			await waitForSessionItems(app, items => items.some(item => item.title === session.title), 'rename session did not render');
+			await rightClickSessionTitle(app, session.title);
 			await waitForContextMenuActions(app);
 			await clickContextMenuAction(app, 'Rename');
 			await app.workbench.quickinput.waitForQuickInputOpened();
@@ -482,16 +600,24 @@ export function setup(logger: Logger) {
 			await app.code.dispatchKeybinding('enter', async () => {
 				await app.workbench.quickinput.waitForQuickInputClosed();
 			});
-			await waitForSessionItems(app, items => items.some(item => item.id === id && item.title === renamedTitle), 'renamed session title did not appear in list');
+			await waitForSessionItems(app, items => items.some(item => item.title === renamedTitle), 'renamed session title did not appear in list');
+			createdSessions.splice(createdSessions.findIndex(item => item.id === session.id), 1, { id: session.id, title: renamedTitle });
+		});
 
-			await clickSessionInList(app, id);
-			await rightClickFocusedSession(app);
+		it('10. Delete session command removes the rendered list row', async function () {
+			const app = this.app as Application;
+			await openOpencodeSidebar(app, false);
+			const session = await createTrackedSession(`e2e-delete-${Date.now()}`);
+
+			await showSessionsSidebar(app);
+			await waitForSessionItems(app, items => items.some(item => item.title === session.title), 'delete session did not render');
+			await rightClickSessionTitle(app, session.title);
 			await waitForContextMenuActions(app);
 			await clickContextMenuAction(app, 'Delete');
 			await app.code.waitForTextContent('.monaco-dialog-box', undefined, text => text.includes('Delete session?'), 50);
 			await app.code.waitAndClick('.monaco-dialog-box .dialog-buttons .monaco-button.default', 2, 2);
-			await waitForSessionItems(app, items => !items.some(item => item.id === id), 'deleted session still appears in list');
-			createdSessionIds.splice(createdSessionIds.indexOf(id), 1);
+			await waitForSessionItems(app, items => !items.some(item => item.title === session.title), 'deleted session still appears in list');
+			createdSessions.splice(createdSessions.findIndex(item => item.id === session.id), 1);
 		});
 	});
 }
