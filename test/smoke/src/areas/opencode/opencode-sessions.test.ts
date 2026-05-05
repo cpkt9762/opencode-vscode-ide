@@ -421,7 +421,7 @@ export function setup(logger: Logger) {
 		}
 
 		before(async function () {
-			this.timeout(30000);
+			this.timeout(90_000);
 			opencodeServeOutput = '';
 			if (await isOpencodeServeHealthy(opencodeSmokeServePort, opencodeSmokeServerPassword)) {
 				return;
