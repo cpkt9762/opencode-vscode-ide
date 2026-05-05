@@ -2,8 +2,7 @@
  *  Copyright (c) pingzi. Licensed under the Apache License, Version 2.0.
  *--------------------------------------------------------------------------------------------*/
 
-import type { VSBuffer, VSBufferReadableStream } from "../../../../base/common/buffer.js";
-import { CancellationToken, CancellationTokenSource } from "../../../../base/common/cancellation.js";
+import { CancellationToken } from "../../../../base/common/cancellation.js";
 import { Emitter, type Event } from "../../../../base/common/event.js";
 import { Disposable } from "../../../../base/common/lifecycle.js";
 import { FileAccess } from "../../../../base/common/network.js";
@@ -34,7 +33,6 @@ export type OpencodeSessionsFetchFn = (
 export type OpencodeSessionsEventStreamFactory = (
 	url: string,
 	signal: AbortSignal,
-	requestService: IRequestService,
 ) => Promise<AsyncIterable<IOpencodeSessionEvent | string>>;
 
 const refreshDebounceMs = 400;
@@ -203,96 +201,33 @@ function requestData(body: BodyInit | null | undefined): string | undefined {
 	throw new Error("OpenCode API requests only support string request bodies");
 }
 
-function headerValue(headers: IHeaders, name: string): string | undefined {
-	const value = Object.entries(headers).find(
-		([key]) => key.toLowerCase() === name,
-	)?.[1];
-	return Array.isArray(value) ? value.join(",") : value;
-}
-
-function toReadableStream(
-	stream: VSBufferReadableStream,
-	signal: AbortSignal,
-): ReadableStream<Uint8Array> {
-	return new ReadableStream<Uint8Array>({
-		start(controller) {
-			let settled = false;
-			const cleanup = () => {
-				stream.removeListener("data", onData);
-				stream.removeListener("error", onError);
-				stream.removeListener("end", onEnd);
-				signal.removeEventListener("abort", onAbort);
-			};
-			const close = () => {
-				if (settled) {
-					return;
-				}
-
-				settled = true;
-				cleanup();
-				controller.close();
-			};
-			const fail = (error: Error) => {
-				if (settled) {
-					return;
-				}
-
-				settled = true;
-				cleanup();
-				controller.error(error);
-			};
-			const onData = (data: VSBuffer) => controller.enqueue(data.buffer);
-			const onError = (error: Error) => fail(error);
-			const onEnd = () => close();
-			const onAbort = () => {
-				stream.destroy();
-				fail(new DOMException("Aborted", "AbortError"));
-			};
-
-			stream.on("error", onError);
-			stream.on("end", onEnd);
-			stream.on("data", onData);
-			signal.addEventListener("abort", onAbort, { once: true });
-			if (signal.aborted) {
-				onAbort();
-				return;
-			}
-
-			stream.resume();
-		},
-		cancel() {
-			stream.destroy();
-		},
-	});
-}
-
 async function defaultEventStreamFactory(
 	url: string,
 	signal: AbortSignal,
-	requestService: IRequestService,
 ): Promise<AsyncIterable<IOpencodeSessionEvent | string>> {
-	const cts = new CancellationTokenSource();
-	signal.addEventListener("abort", () => cts.cancel(), { once: true });
-	const context = await requestService.request({
-		type: "GET",
-		url,
+	const response = await fetch(url, {
+		method: "GET",
 		headers: { Accept: "text/event-stream" },
-		callSite: "opencode.sessions.sse",
-	}, cts.token);
-	if (!isSuccess(context)) {
+		signal,
+	});
+	if (!response.ok) {
 		throw new Error(
-			`OpenCode sessions SSE failed with HTTP ${context.res.statusCode ?? "unknown"}`,
+			`OpenCode sessions SSE failed with HTTP ${response.status}`,
 		);
 	}
 
-	const contentType = headerValue(context.res.headers, "content-type");
-	if (!contentType?.includes("text/event-stream")) {
+	const contentType = response.headers.get("content-type") ?? "";
+	if (!contentType.includes("text/event-stream")) {
 		throw new Error(
-			`OpenCode sessions SSE returned non-SSE content type: ${contentType ?? "missing"}`,
+			`OpenCode sessions SSE returned non-SSE content type: ${contentType}`,
 		);
 	}
 
-	return createSSEStreamReader(toReadableStream(context.stream, signal));
+	if (!response.body) {
+		throw new Error("OpenCode sessions SSE response has no body");
+	}
+
+	return createSSEStreamReader(response.body);
 }
 
 export class OpencodeSessionsService
@@ -676,7 +611,6 @@ export class OpencodeSessionsService
 			const stream = await this.eventStreamFactory(
 				`${await this.getApiBaseUrl()}/event`,
 				controller.signal,
-				this.requestService,
 			);
 			if (!this.isCurrentSSE(run, controller)) {
 				return;

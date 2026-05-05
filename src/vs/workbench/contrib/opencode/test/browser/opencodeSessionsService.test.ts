@@ -348,6 +348,67 @@ suite("OpencodeSessionsService", () => {
 		}
 	});
 
+	test("default SSE stream uses native fetch body", async () => {
+		const workspace = createWorkspaceHarness("/workspace/a");
+		const calls: string[] = [];
+		const fetchCalls: { readonly url: string; readonly accept: string | null }[] = [];
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = (async (input, init) => {
+			fetchCalls.push({
+				url: String(input),
+				accept: new Headers(init?.headers).get("accept"),
+			});
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(
+							new TextEncoder().encode(
+								`data: ${JSON.stringify({
+									type: "session.created",
+									properties: {
+										session: session("fetch_sse", "Fetch SSE"),
+									},
+								})}\n\n`,
+							),
+						);
+						controller.close();
+					},
+				}),
+				{ headers: { "content-type": "text/event-stream" } },
+			);
+		}) as typeof fetch;
+		const service = new OpencodeSessionsService(
+			createLogService(),
+			createSpaProxyService({ "/workspace/a": 4101 }),
+			workspace.service,
+			createConfigurationService(),
+			createRequestService(
+				{ "http://127.0.0.1:4101": { sessions: [] } },
+				calls,
+			),
+		);
+
+		try {
+			await service.start();
+			await waitFor(
+				() => service.state.sessions.some((item) => item.id === "fetch_sse"),
+				"native fetch SSE event did not update state",
+			);
+
+			assert.deepStrictEqual(fetchCalls, [
+				{
+					url: "http://127.0.0.1:4101/event",
+					accept: "text/event-stream",
+				},
+			]);
+			assert.ok(!calls.includes("GET http://127.0.0.1:4101/event"));
+		} finally {
+			globalThis.fetch = originalFetch;
+			service.dispose();
+			workspace.dispose();
+		}
+	});
+
 	test("SSE event triggers state update", async () => {
 		const workspace = createWorkspaceHarness("/workspace/a");
 		const calls: string[] = [];
