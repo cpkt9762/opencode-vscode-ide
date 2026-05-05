@@ -1019,7 +1019,11 @@ export class SpaProxyService implements ISpaProxyService {
 	}
 
 	async url(workspaceDir: string) {
-		return `http://127.0.0.1:${this.port || stablePort(this.backend || 'http://127.0.0.1:4096')}/${encodeWorkspaceDir(workspaceDir)}`;
+		if (!this.port || !this.backend) {
+			throw new Error('OpenCode SPA proxy has not been started yet');
+		}
+
+		return `http://127.0.0.1:${this.port}/${encodeWorkspaceDir(workspaceDir)}`;
 	}
 
 	dispose() {

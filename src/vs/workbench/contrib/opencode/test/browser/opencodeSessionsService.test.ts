@@ -7,9 +7,9 @@ import * as assert from "assert";
 import { bufferToStream, VSBuffer } from "../../../../../base/common/buffer.js";
 import { Emitter, Event } from "../../../../../base/common/event.js";
 import { URI } from "../../../../../base/common/uri.js";
+import type { IRequestContext } from "../../../../../base/parts/request/common/request.js";
 import type { IConfigurationService } from "../../../../../platform/configuration/common/configuration.js";
 import type { ILogService } from "../../../../../platform/log/common/log.js";
-import type { IRequestContext } from "../../../../../base/parts/request/common/request.js";
 import type { IRequestService } from "../../../../../platform/request/common/request.js";
 import type { IWorkspaceContextService } from "../../../../../platform/workspace/common/workspace.js";
 import type {
@@ -143,17 +143,28 @@ function createWorkspaceHarness(workspaceDir: string): WorkspaceHarness {
 
 function createSpaProxyService(
 	ports: Record<string, number>,
+	starts: string[] = [],
 ): ISpaProxyService {
+	let started = false;
 	return {
-		async start() {
+		_serviceBrand: undefined,
+		async start(options) {
+			started = true;
+			starts.push(options.dist);
 			return { port: 5888 };
 		},
-		async stop() {},
+		async stop() {
+			started = false;
+		},
 		async url(workspaceDir: string) {
+			if (!started) {
+				throw new Error("test spa proxy was not started");
+			}
+
 			return `http://127.0.0.1:${ports[workspaceDir] ?? 5888}/${encodeURIComponent(workspaceDir)}`;
 		},
 		dispose() {},
-	} as unknown as ISpaProxyService;
+	};
 }
 
 function createLogService(): ILogService {
@@ -241,12 +252,14 @@ function createService(input: {
 	readonly requestService: IRequestService;
 	readonly eventStreamFactory?: OpencodeSessionsEventStreamFactory;
 	readonly ports?: Record<string, number>;
+	readonly spaProxyService?: ISpaProxyService;
 }): OpencodeSessionsService {
 	return new OpencodeSessionsService(
 		createLogService(),
-		createSpaProxyService(
-			input.ports ?? { "/workspace/a": 4101, "/workspace/b": 4102 },
-		),
+		input.spaProxyService ??
+			createSpaProxyService(
+				input.ports ?? { "/workspace/a": 4101, "/workspace/b": 4102 },
+			),
 		input.workspace.service,
 		createConfigurationService(),
 		input.requestService,
@@ -276,6 +289,36 @@ async function waitFor(
 }
 
 suite("OpencodeSessionsService", () => {
+	test("starts spa proxy before fetching session APIs", async () => {
+		const workspace = createWorkspaceHarness("/workspace/a");
+		const calls: string[] = [];
+		const starts: string[] = [];
+		const service = createService({
+			workspace,
+			requestService: createRequestService(
+				{ "http://127.0.0.1:4101": { sessions: [], status: {} } },
+				calls,
+			),
+			spaProxyService: createSpaProxyService({ "/workspace/a": 4101 }, starts),
+		});
+
+		try {
+			await service.start();
+
+			assert.ok(starts.length >= 1);
+			assert.ok(
+				starts.every((start) =>
+					start.endsWith("vs/workbench/contrib/opencode/media/spa"),
+				),
+			);
+			assert.ok(calls.includes("GET http://127.0.0.1:4101/session"));
+			assert.ok(calls.includes("GET http://127.0.0.1:4101/session/status"));
+		} finally {
+			service.dispose();
+			workspace.dispose();
+		}
+	});
+
 	test("initial fetch populates state", async () => {
 		const workspace = createWorkspaceHarness("/workspace/a");
 		const calls: string[] = [];

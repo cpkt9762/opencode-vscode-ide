@@ -6,6 +6,7 @@ import type { VSBuffer, VSBufferReadableStream } from "../../../../base/common/b
 import { CancellationToken, CancellationTokenSource } from "../../../../base/common/cancellation.js";
 import { Emitter, type Event } from "../../../../base/common/event.js";
 import { Disposable } from "../../../../base/common/lifecycle.js";
+import { FileAccess } from "../../../../base/common/network.js";
 import type { IHeaders, IRequestContext } from "../../../../base/parts/request/common/request.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
@@ -41,6 +42,7 @@ const statusCacheTtlMs = 500;
 const heartbeatMs = 15_000;
 const reconnectDelays = [250, 500, 1000, 2000, 4000] as const;
 const statuses = new Set<IOpencodeSessionStatus>(["busy", "idle", "retry"]);
+const opencodeSpaPath = "vs/workbench/contrib/opencode/media/spa";
 
 function record(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -514,6 +516,10 @@ export class OpencodeSessionsService
 		if (!workspaceDir) {
 			throw new Error("OpenCode sessions require a workspace folder");
 		}
+
+		await this.spaProxyService.start({
+			dist: FileAccess.asFileUri(opencodeSpaPath).fsPath,
+		});
 
 		const url = new URL(await this.spaProxyService.url(workspaceDir));
 		url.pathname = url.pathname.replace(/\/[^/]*\/?$/, "");

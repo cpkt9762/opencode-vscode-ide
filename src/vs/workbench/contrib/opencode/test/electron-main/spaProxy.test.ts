@@ -15,7 +15,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 // biome-ignore lint/style/useNodejsImportProtocol: electron-main unit tests use node builtins directly.
 import { runInNewContext } from 'vm';
-import { API, BOOTSTRAP, decodeWorkspaceDir, encodeWorkspaceDir, reuse, stablePort, start } from '../../electron-main/spaProxy.js';
+import type { ILogService } from '../../../../../platform/log/common/log.js';
+import type { IOpencodeServeManager } from '../../electron-main/opencodeServeManager.js';
+import { API, BOOTSTRAP, decodeWorkspaceDir, encodeWorkspaceDir, reuse, SpaProxyService, stablePort, start } from '../../electron-main/spaProxy.js';
 
 type ResponseData = {
 	body: string;
@@ -82,6 +84,30 @@ function extractBootstrap(body: string) {
 	const match = body.match(/<script>([\s\S]*?)<\/script>/);
 	assert.ok(match, 'missing bootstrap script');
 	return match[1];
+}
+
+function createLogService(): ILogService {
+	return {
+		trace() {},
+		info() {},
+		warn() {},
+		error() {},
+	} as unknown as ILogService;
+}
+
+function createServeManager(): IOpencodeServeManager {
+	return {
+		_serviceBrand: undefined,
+		backendUrl: undefined,
+		async start() {
+			return 'http://127.0.0.1:9';
+		},
+		getPassword() {
+			return undefined;
+		},
+		async stop() {},
+		dispose() {},
+	};
 }
 
 
@@ -288,6 +314,36 @@ suite('SpaProxy', () => {
 
 		assert.strictEqual(stablePort(backend), port);
 		assert.ok(port >= 49152 && port <= 65535);
+	});
+
+	test('url() throws when proxy not started', async () => {
+		const service = new SpaProxyService(createLogService(), createServeManager());
+
+		await assert.rejects(
+			service.url('/workspace/a'),
+			/not been started/,
+		);
+	});
+
+	test('url() returns actual port after start()', async () => {
+		const dist = createDist({ 'index.html': '<!doctype html><html><head></head><body></body></html>' });
+		const backend = createServer((_request, response) => {
+			response.writeHead(200, { 'content-type': 'application/json' });
+			response.end('{}');
+		});
+		await new Promise<void>(resolve => backend.listen(0, '127.0.0.1', resolve));
+		const address = backend.address();
+		const backendUrl = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
+		const service = new SpaProxyService(createLogService(), createServeManager());
+
+		try {
+			const result = await service.start({ backend: backendUrl, dist });
+			assert.strictEqual(await service.url('/workspace/a'), `http://127.0.0.1:${result.port}/${encodeWorkspaceDir('/workspace/a')}`);
+		} finally {
+			await service.stop();
+			await closeServer(backend);
+			rmSync(dist, { force: true, recursive: true });
+		}
 	});
 
 	test('reuse returns same port if health matches', async () => {
