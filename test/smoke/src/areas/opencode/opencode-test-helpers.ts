@@ -15,7 +15,7 @@ const sessionsListRowSelector = '.opencode-sessions-list .monaco-list-row';
 const sessionsViewSelector = '.opencode-sessions-view';
 const chatViewSelector = '.opencode-chat-view';
 
-export const opencodeSmokeServePort = 4096;
+export const opencodeSmokeServePort = 4097;
 export const opencodeSmokeServerPassword = 'opencode-smoke-password';
 
 export type OpencodeSessionsOrientation = 'stacked' | 'sideBySide';
