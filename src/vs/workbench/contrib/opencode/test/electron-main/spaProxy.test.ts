@@ -43,13 +43,13 @@ function createDist(files: Record<string, string | Buffer>) {
 	return dir;
 }
 
-function get(port: number, path: string, headers: Record<string, string> = {}): Promise<ResponseData> {
+function requestData(method: string, port: number, path: string, headers: Record<string, string> = {}): Promise<ResponseData> {
 	return new Promise((resolve, reject) => {
 		const outgoing = request(
 			{
 				headers,
 				hostname: '127.0.0.1',
-				method: 'GET',
+				method,
 				path,
 				port,
 			},
@@ -68,6 +68,14 @@ function get(port: number, path: string, headers: Record<string, string> = {}): 
 		outgoing.on('error', reject);
 		outgoing.end();
 	});
+}
+
+function get(port: number, path: string, headers: Record<string, string> = {}): Promise<ResponseData> {
+	return requestData('GET', port, path, headers);
+}
+
+function options(port: number, path: string, headers: Record<string, string> = {}): Promise<ResponseData> {
+	return requestData('OPTIONS', port, path, headers);
 }
 
 function extractBootstrap(body: string) {
@@ -538,7 +546,7 @@ suite('SpaProxy', () => {
 		}
 	});
 
-	test('no CORS wildcard header', async () => {
+	test('restricted CORS headers for proxied API responses', async () => {
 		const dist = createDist({ 'index.html': '<!doctype html><html><head></head><body></body></html>' });
 		const backend = createServer((_request, response) => {
 			response.writeHead(200, { 'content-type': 'application/json' });
@@ -549,8 +557,50 @@ suite('SpaProxy', () => {
 		const site = await start({ backend: `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`, dist });
 
 		try {
-			const response = await get(site.port, '/');
-			assert.strictEqual(response.headers['access-control-allow-origin'], undefined);
+			const withoutOrigin = await get(site.port, '/session');
+			const allowedOrigin = await get(site.port, '/session', { origin: 'vscode-file://vscode-app' });
+			const disallowedOrigin = await get(site.port, '/session', { origin: 'https://evil.example' });
+
+			assert.strictEqual(withoutOrigin.headers['access-control-allow-origin'], undefined);
+			assert.strictEqual(allowedOrigin.headers['access-control-allow-origin'], 'vscode-file://vscode-app');
+			assert.strictEqual(allowedOrigin.headers['access-control-allow-methods'], 'GET, POST, PUT, DELETE, OPTIONS');
+			assert.strictEqual(allowedOrigin.headers['access-control-allow-headers'], 'Content-Type, Authorization, Accept');
+			assert.strictEqual(allowedOrigin.headers['access-control-allow-credentials'], 'false');
+			assert.strictEqual(allowedOrigin.headers.vary, 'Origin');
+			assert.notStrictEqual(allowedOrigin.headers['access-control-allow-origin'], '*');
+			assert.strictEqual(disallowedOrigin.headers['access-control-allow-origin'], undefined);
+		} finally {
+			await closeServer(site.server);
+			await closeServer(backend);
+			rmSync(dist, { force: true, recursive: true });
+		}
+	});
+
+	test('restricted CORS preflight for proxied API routes', async () => {
+		const dist = createDist({ 'index.html': '<!doctype html><html><head></head><body></body></html>' });
+		const backend = createServer((_request, response) => {
+			response.writeHead(500, { 'content-type': 'application/json' });
+			response.end('{"proxied":true}');
+		});
+		await new Promise<void>(resolve => backend.listen(0, '127.0.0.1', resolve));
+		const address = backend.address();
+		const site = await start({ backend: `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`, dist });
+
+		try {
+			const allowedOrigin = await options(site.port, '/session', { origin: 'vscode-file://vscode-app' });
+			const webviewOrigin = await options(site.port, '/session', { origin: 'vscode-webview://abc123' });
+			const disallowedOrigin = await options(site.port, '/session', { origin: 'https://evil.example' });
+
+			assert.strictEqual(allowedOrigin.status, 204);
+			assert.strictEqual(allowedOrigin.headers['access-control-allow-origin'], 'vscode-file://vscode-app');
+			assert.strictEqual(allowedOrigin.headers['access-control-allow-methods'], 'GET, POST, PUT, DELETE, OPTIONS');
+			assert.strictEqual(allowedOrigin.headers['access-control-allow-headers'], 'Content-Type, Authorization, Accept');
+			assert.strictEqual(allowedOrigin.headers['access-control-allow-credentials'], 'false');
+			assert.strictEqual(allowedOrigin.headers.vary, 'Origin');
+			assert.strictEqual(webviewOrigin.status, 204);
+			assert.strictEqual(webviewOrigin.headers['access-control-allow-origin'], 'vscode-webview://abc123');
+			assert.strictEqual(disallowedOrigin.status, 204);
+			assert.strictEqual(disallowedOrigin.headers['access-control-allow-origin'], undefined);
 		} finally {
 			await closeServer(site.server);
 			await closeServer(backend);

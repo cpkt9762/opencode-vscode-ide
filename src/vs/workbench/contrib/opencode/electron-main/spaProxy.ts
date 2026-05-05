@@ -13,6 +13,7 @@ import { ISpaProxyService } from './spaProxyService.js';
 
 const BACKEND_UNAVAILABLE = 'backend unavailable';
 const HEALTH = '/opencode-spa-health';
+const ALLOWED_ORIGIN_PROTOCOLS = ['vscode-file:', 'vscode-webview:'];
 
 const MIME = {
 	'.html': 'text/html; charset=utf-8',
@@ -652,6 +653,36 @@ function writeResponse(res: ServerResponse, statusCode: number, body: Buffer | s
 	res.end(body);
 }
 
+function isAllowedOrigin(origin: string | undefined): boolean {
+	if (!origin) {
+		return false;
+	}
+
+	try {
+		return ALLOWED_ORIGIN_PROTOCOLS.includes(new URL(origin).protocol);
+	} catch {
+		return false;
+	}
+}
+
+function corsHeaders(origin: string | undefined): Record<string, string> {
+	if (!origin || !isAllowedOrigin(origin)) {
+		return {};
+	}
+
+	return {
+		'Access-Control-Allow-Origin': origin,
+		'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+		'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+		'Access-Control-Allow-Credentials': 'false',
+		Vary: 'Origin',
+	};
+}
+
+function originHeader(incoming: IncomingMessage) {
+	return Array.isArray(incoming.headers.origin) ? incoming.headers.origin[0] : incoming.headers.origin;
+}
+
 function readBinary(path: string) {
 	return readFile(path).then(undefined, () => undefined);
 }
@@ -790,7 +821,10 @@ export function proxy(
 		},
 		upstream => {
 			const live = want || sse(upstream.headers['content-type']);
-			res.writeHead(upstream.statusCode ?? 502, upstream.headers);
+			res.writeHead(upstream.statusCode ?? 502, {
+				...upstream.headers,
+				...corsHeaders(originHeader(incoming)),
+			});
 			if (!live) {
 				upstream.pipe(res);
 				return;
@@ -807,7 +841,7 @@ export function proxy(
 		},
 	);
 
-	outgoing.on('error', () => writeResponse(res, 502, BACKEND_UNAVAILABLE));
+	outgoing.on('error', () => writeResponse(res, 502, BACKEND_UNAVAILABLE, corsHeaders(originHeader(incoming))));
 	incoming.pipe(outgoing);
 }
 
@@ -865,6 +899,11 @@ export async function start(options: StartOptions): Promise<{ server: Server; po
 		const url = new URL(incoming.url ?? '/', 'http://127.0.0.1');
 		if (url.pathname === HEALTH) {
 			writeResponse(res, 200, JSON.stringify({ backend: backend.href, ok: true }), { 'Content-Type': 'application/json' });
+			return;
+		}
+
+		if (incoming.method === 'OPTIONS' && API.some(prefix => url.pathname.startsWith(prefix))) {
+			writeResponse(res, 204, '', corsHeaders(originHeader(incoming)));
 			return;
 		}
 
