@@ -560,6 +560,10 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 	private filteredSessions(sessions: readonly IOpencodeSession[]): IOpencodeSession[] {
 		const search = this.filter.search.toLocaleLowerCase();
 		return sessions.filter(session => {
+			if (session.parentID) {
+				return false;
+			}
+
 			if (search && !session.title.toLocaleLowerCase().includes(search)) {
 				return false;
 			}
