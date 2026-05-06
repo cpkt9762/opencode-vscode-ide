@@ -2,6 +2,7 @@
  *  Copyright (c) pingzi. Licensed under the Apache License, Version 2.0.
  *--------------------------------------------------------------------------------------------*/
 
+import './media/opencodeSessionsControl.css';
 import * as dom from "../../../../base/browser/dom.js";
 import type { HoverPosition } from "../../../../base/browser/ui/hover/hoverWidget.js";
 import type { IListStyles } from "../../../../base/browser/ui/list/listWidget.js";
