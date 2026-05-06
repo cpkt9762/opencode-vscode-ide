@@ -24,6 +24,9 @@ export interface IOpencodeSessionListItem {
 	readonly kind: 'session';
 	readonly session: IOpencodeSession;
 	readonly status?: IOpencodeSessionStatus;
+	readonly depth?: 0 | 1;
+	readonly childCount?: number;
+	readonly expanded?: boolean;
 }
 
 export interface IOpencodeGroupHeaderTemplate {
@@ -35,6 +38,7 @@ export interface IOpencodeGroupHeaderTemplate {
 
 export interface IOpencodeSessionRowTemplate {
 	readonly container: HTMLElement;
+	readonly chevron: HTMLElement;
 	readonly statusIcon: HTMLElement;
 	readonly title: HTMLElement;
 	readonly time: HTMLElement;
@@ -79,11 +83,12 @@ export class OpencodeSessionsRowRenderer implements IListRenderer<IOpencodeListI
 
 	renderTemplate(container: HTMLElement): IOpencodeSessionRowTemplate {
 		const row = dom.append(container, dom.$('.sessions-session-row'));
+		const chevron = dom.append(row, dom.$('.session-chevron'));
 		const statusIcon = dom.append(row, dom.$('.status-icon'));
 		const title = dom.append(row, dom.$('.title'));
 		const time = dom.append(row, dom.$('.time'));
 
-		return { container: row, statusIcon, title, time };
+		return { container: row, chevron, statusIcon, title, time };
 	}
 
 	renderElement(element: IOpencodeListItem, _index: number, template: IOpencodeSessionRowTemplate): void {
@@ -91,9 +96,16 @@ export class OpencodeSessionsRowRenderer implements IListRenderer<IOpencodeListI
 			return;
 		}
 
+		template.container.classList.toggle('is-child', element.depth === 1);
+
 		template.title.textContent = element.session.title;
 		template.title.title = element.session.title;
 		template.time.textContent = formatRelativeTime(element.session.time.updated);
+
+		template.chevron.dataset['sessionId'] = element.session.id;
+		template.chevron.className = element.childCount
+			? `session-chevron ${ThemeIcon.asClassName(element.expanded ? Codicon.chevronDown : Codicon.chevronRight)}`
+			: 'session-chevron empty';
 
 		const statusIcon = sessionStatusIcon(element.status);
 		template.statusIcon.className = `status-icon ${ThemeIcon.asClassName(statusIcon.icon)}`;

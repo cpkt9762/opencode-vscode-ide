@@ -57,6 +57,7 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 	private sessionsList: WorkbenchList<IOpencodeListItem> | undefined;
 	private renderedItems: readonly IOpencodeListItem[] = [];
 	private collapsedGroupIds = new Set<SessionsGroupId>();
+	private expandedSessionIds = new Set<string>();
 	private searchDebounce: ReturnType<typeof setTimeout> | undefined;
 	private agentOptionsKey = "";
 	private filter: { readonly search: string; readonly agent: string | undefined } = { search: "", agent: undefined };
@@ -103,7 +104,9 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
  	openFind(): void { }
 
 	reveal(sessionID: string): boolean {
-		const group = groupByDate(this.filteredSessions(this.sessionsService.state.sessions), "updated")
+		const sessions = this.sessionsService.state.sessions;
+		const childrenByParent = this.buildChildrenByParent(sessions);
+		const group = groupByDate(this.filteredRootSessions(sessions, childrenByParent), "updated")
 			.find(item => item.sessions.some(session => session.id === sessionID));
 		if (!group) {
 			return false;
@@ -282,6 +285,24 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 			this._register(dom.addDisposableListener(this.stateContainer, dom.EventType.CLICK, event => this.onStateActionClick(event)));
 		}
 
+		if (this.listContainer) {
+			this._register(dom.addDisposableListener(this.listContainer, dom.EventType.CLICK, event => {
+				const target = event.target;
+				if (!(target instanceof HTMLElement)) {
+					return;
+				}
+
+				const chevron = target.closest('.session-chevron');
+				if (!(chevron instanceof HTMLElement) || !chevron.dataset['sessionId'] || chevron.classList.contains('empty')) {
+					return;
+				}
+
+				event.preventDefault();
+				event.stopPropagation();
+				this.toggleSessionExpand(chevron.dataset['sessionId']);
+			}));
+		}
+
 		const sessionsList = this.sessionsList;
 		if (!sessionsList) {
 			return;
@@ -330,24 +351,98 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 	private renderSessions(): void {
 		const snapshot = this.snapshotListState();
 		const sessions = this.sessionsService.state.sessions;
+		const childrenByParent = this.buildChildrenByParent(sessions);
 		this.updateAgentOptions(sessions);
-		const filteredSessions = this.filteredSessions(sessions);
-		this.renderedItems = groupByDate(filteredSessions, "updated").flatMap(group => {
+		const filteredRoots = this.filteredRootSessions(sessions, childrenByParent);
+		this.renderedItems = groupByDate(filteredRoots, "updated").flatMap(group => {
 			const collapsed = this.collapsedGroupIds.has(group.id);
 			return [
 				{ kind: "group" as const, group, collapsed },
-				...(collapsed ? [] : group.sessions.map(session => ({
-					kind: "session" as const,
-					session,
-					status: this.sessionsService.state.status[session.id],
-				}))),
+				...(collapsed ? [] : group.sessions.flatMap(session => {
+					const children = this.filteredChildSessions(childrenByParent.get(session.id) ?? []);
+					const expanded = this.expandedSessionIds.has(session.id);
+					return [
+						{
+							kind: "session" as const,
+							session,
+							status: this.sessionsService.state.status[session.id],
+							depth: 0 as const,
+							childCount: children.length,
+							expanded,
+						},
+						...(expanded ? children.map(child => ({
+							kind: "session" as const,
+							session: child,
+							status: this.sessionsService.state.status[child.id],
+							depth: 1 as const,
+						})) : []),
+					];
+				})),
 			];
 		});
 		this.sessionsList?.splice(0, this.sessionsList.length, this.renderedItems);
 		this.restoreListState(snapshot);
-		this.updateFilterBadge(filteredSessions.length, sessions.length);
+		this.updateFilterBadge(filteredRoots.length, sessions.filter(s => !s.parentID).length);
 		this.renderStateView();
 		this.updateStreamStatusIndicator();
+	}
+
+	private buildChildrenByParent(sessions: readonly IOpencodeSession[]): Map<string, IOpencodeSession[]> {
+		return sessions
+			.filter((s): s is IOpencodeSession & { readonly parentID: string } => !!s.parentID)
+			.reduce((map, s) => {
+				map.set(s.parentID, [...(map.get(s.parentID) ?? []), s]);
+				return map;
+			}, new Map<string, IOpencodeSession[]>());
+	}
+
+	private filteredRootSessions(
+		sessions: readonly IOpencodeSession[],
+		childrenByParent: Map<string, IOpencodeSession[]>,
+	): IOpencodeSession[] {
+		return sessions.filter(session => {
+			if (session.parentID) {
+				return false;
+			}
+
+			if (!this.isFilterActive()) {
+				return true;
+			}
+
+			return this.sessionMatchesFilter(session)
+				|| (childrenByParent.get(session.id) ?? []).some(child => this.sessionMatchesFilter(child));
+		});
+	}
+
+	private filteredChildSessions(sessions: readonly IOpencodeSession[]): IOpencodeSession[] {
+		if (!this.isFilterActive()) {
+			return [...sessions];
+		}
+
+		return sessions.filter(session => this.sessionMatchesFilter(session));
+	}
+
+	private sessionMatchesFilter(session: IOpencodeSession): boolean {
+		const search = this.filter.search.toLocaleLowerCase();
+		if (search && !session.title.toLocaleLowerCase().includes(search)) {
+			return false;
+		}
+
+		if (this.filter.agent && extractAgentName(session.title) !== this.filter.agent) {
+			return false;
+		}
+
+		return true;
+	}
+
+	private toggleSessionExpand(sessionId: string): void {
+		if (this.expandedSessionIds.has(sessionId)) {
+			this.expandedSessionIds.delete(sessionId);
+		} else {
+			this.expandedSessionIds.add(sessionId);
+		}
+
+		this.renderSessions();
 	}
 
 	private snapshotListState(): IListStateSnapshot {
@@ -555,25 +650,6 @@ export class OpencodeSessionsControl extends Disposable implements IOpencodeSess
 		}
 
 		return `${message.slice(0, 157)}...`;
-	}
-
-	private filteredSessions(sessions: readonly IOpencodeSession[]): IOpencodeSession[] {
-		const search = this.filter.search.toLocaleLowerCase();
-		return sessions.filter(session => {
-			if (session.parentID) {
-				return false;
-			}
-
-			if (search && !session.title.toLocaleLowerCase().includes(search)) {
-				return false;
-			}
-
-			if (this.filter.agent && extractAgentName(session.title) !== this.filter.agent) {
-				return false;
-			}
-
-			return true;
-		});
 	}
 
 	private updateAgentOptions(sessions: readonly IOpencodeSession[]): void {

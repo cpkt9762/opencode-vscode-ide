@@ -21,6 +21,33 @@
 	color: var(--vscode-list-hoverForeground, var(--vscode-foreground));
 }
 
+.opencode-sessions-control .sessions-session-row .session-chevron {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 16px;
+	width: 16px;
+	height: 16px;
+	font-size: 16px;
+	line-height: 16px;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+}
+
+.opencode-sessions-control .sessions-session-row .session-chevron.empty {
+	opacity: 0;
+	pointer-events: none;
+}
+
+.opencode-sessions-control .sessions-session-row.is-child {
+	padding-left: 32px;
+}
+
+.opencode-sessions-control .sessions-session-row.is-child .title {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
 .opencode-sessions-control .sessions-session-row .status-icon {
 	display: flex;
 	align-items: center;
