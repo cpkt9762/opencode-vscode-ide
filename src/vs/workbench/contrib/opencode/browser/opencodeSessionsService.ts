@@ -442,6 +442,8 @@ export class OpencodeSessionsService
 		super.dispose();
 	}
 
+	private apiWorkspaceDir: string | undefined;
+
 	private async getApiBaseUrl(): Promise<string> {
 		if (this.apiBaseUrl) {
 			return this.apiBaseUrl;
@@ -461,7 +463,19 @@ export class OpencodeSessionsService
 		url.search = "";
 		url.hash = "";
 		this.apiBaseUrl = url.toString().replace(/\/$/, "");
+		this.apiWorkspaceDir = workspaceDir;
 		return this.apiBaseUrl;
+	}
+
+	private apiUrl(path: string): string {
+		const base = this.apiBaseUrl ?? "";
+		const dir = this.apiWorkspaceDir;
+		if (!dir) {
+			return `${base}${path}`;
+		}
+		const url = new URL(`${base}${path}`);
+		url.searchParams.set("directory", dir);
+		return url.toString();
 	}
 
 	private async fetchSessions(): Promise<IOpencodeSession[]> {
@@ -555,9 +569,10 @@ export class OpencodeSessionsService
 		init?: RequestInit,
 	): Promise<IRequestContext> {
 		const method = (init?.method ?? "GET").toUpperCase();
+		await this.getApiBaseUrl();
 		const context = await this.requestService.request({
 			type: method,
-			url: `${await this.getApiBaseUrl()}${path}`,
+			url: this.apiUrl(path),
 			headers: requestHeaders(init?.headers),
 			data: requestData(init?.body),
 			callSite: "opencode.sessions.api",
@@ -608,8 +623,9 @@ export class OpencodeSessionsService
 		this.armHeartbeat(run, controller);
 
 		try {
+			await this.getApiBaseUrl();
 			const stream = await this.eventStreamFactory(
-				`${await this.getApiBaseUrl()}/event`,
+				this.apiUrl("/event"),
 				controller.signal,
 			);
 			if (!this.isCurrentSSE(run, controller)) {
