@@ -133,7 +133,8 @@ function eventSession(
 	event: IOpencodeSessionEvent,
 ): IOpencodeSession | undefined {
 	if (event.type === "created" || event.type === "updated") {
-		return toSession(event.session);
+		const raw = event as unknown as Record<string, unknown>;
+		return toSession(raw["info"] ?? raw["session"]);
 	}
 
 	return undefined;
