@@ -40,7 +40,9 @@ export interface IOpencodeSessionRowTemplate {
 	readonly container: HTMLElement;
 	readonly chevron: HTMLElement;
 	readonly statusIcon: HTMLElement;
+	readonly titleBlock: HTMLElement;
 	readonly title: HTMLElement;
+	readonly meta: HTMLElement;
 	readonly time: HTMLElement;
 }
 
@@ -85,10 +87,12 @@ export class OpencodeSessionsRowRenderer implements IListRenderer<IOpencodeListI
 		const row = dom.append(container, dom.$('.sessions-session-row'));
 		const chevron = dom.append(row, dom.$('.session-chevron'));
 		const statusIcon = dom.append(row, dom.$('.status-icon'));
-		const title = dom.append(row, dom.$('.title'));
+		const titleBlock = dom.append(row, dom.$('.title-block'));
+		const title = dom.append(titleBlock, dom.$('.title'));
+		const meta = dom.append(titleBlock, dom.$('.meta'));
 		const time = dom.append(row, dom.$('.time'));
 
-		return { container: row, chevron, statusIcon, title, time };
+		return { container: row, chevron, statusIcon, titleBlock, title, meta, time };
 	}
 
 	renderElement(element: IOpencodeListItem, _index: number, template: IOpencodeSessionRowTemplate): void {
@@ -98,8 +102,14 @@ export class OpencodeSessionsRowRenderer implements IListRenderer<IOpencodeListI
 
 		template.container.classList.toggle('is-child', element.depth === 1);
 
-		template.title.textContent = element.session.title;
-		template.title.title = element.session.title;
+		const isChild = element.depth === 1;
+		const displayTitle = isChild ? stripSubagentSuffix(element.session.title) : element.session.title;
+		const agentMeta = isChild ? childAgentMeta(element.session.title) : undefined;
+
+		template.title.textContent = displayTitle;
+		template.title.title = displayTitle;
+		template.meta.textContent = agentMeta ?? '';
+		template.meta.classList.toggle('hidden', !agentMeta);
 		template.time.textContent = formatRelativeTime(element.session.time.updated);
 
 		template.chevron.dataset['sessionId'] = element.session.id;
@@ -136,7 +146,18 @@ export class OpencodeSessionsListVirtualDelegate implements IListVirtualDelegate
 	}
 }
 
+const subagentSuffixPattern = /\s+\(@[^)]+?\s+subagent\)$/i;
+
 export const extractAgentName = (title: string): string | undefined => /@(\S+)\s+subagent/i.exec(title)?.[1];
+
+function stripSubagentSuffix(title: string): string {
+	return title.replace(subagentSuffixPattern, '');
+}
+
+function childAgentMeta(title: string): string | undefined {
+	const agent = extractAgentName(title);
+	return agent ? `@${agent}` : undefined;
+}
 
 function sessionStatusIcon(status: IOpencodeSessionStatus | undefined): IStatusIconPresentation {
 	if (status === 'busy') {
