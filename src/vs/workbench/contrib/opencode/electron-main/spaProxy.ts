@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type OutgoingHttpHeaders, request as req, type Server, type ServerResponse } from 'node:http';
 import { extname, join } from 'node:path';
@@ -736,7 +737,7 @@ export function sse(value: string | string[] | undefined) {
 		: value?.includes('text/event-stream') ?? false;
 }
 
-export function reuse(port: number, backend: string) {
+export function reuse(port: number, backend: string, password?: string, _pwHash = password ? createHash('sha256').update(password).digest('hex').slice(0, 16) : '') {
 	return new Promise<boolean>(resolve => {
 		let live = true;
 		const done = (ok: boolean) => {
@@ -765,8 +766,12 @@ export function reuse(port: number, backend: string) {
 					}
 
 					Promise.resolve(body)
-						.then(item => JSON.parse(item) as { backend?: unknown; ok?: unknown })
-						.then(item => done(item.ok === true && item.backend === new URL(backend).href))
+						.then(item => JSON.parse(item) as { backend?: unknown; ok?: unknown; password?: unknown })
+						.then(item => done(
+							item.ok === true &&
+							item.backend === new URL(backend).href &&
+							(item.password ?? '') === _pwHash
+						))
 						.catch(() => done(false));
 				});
 			},
@@ -898,7 +903,8 @@ export async function start(options: StartOptions): Promise<{ server: Server; po
 	const server = createServer((incoming, res) => {
 		const url = new URL(incoming.url ?? '/', 'http://127.0.0.1');
 		if (url.pathname === HEALTH) {
-			writeResponse(res, 200, JSON.stringify({ backend: backend.href, ok: true }), { 'Content-Type': 'application/json' });
+			const pwHash = options.password ? createHash('sha256').update(options.password).digest('hex').slice(0, 16) : '';
+			writeResponse(res, 200, JSON.stringify({ backend: backend.href, ok: true, password: pwHash }), { 'Content-Type': 'application/json' });
 			return;
 		}
 
@@ -924,17 +930,17 @@ export async function start(options: StartOptions): Promise<{ server: Server; po
 				return;
 			}
 
-			void reuse(preferred, options.backend)
-				.then(ok => {
-					if (ok) {
-						log(`[SPA] reusing compatible proxy on port ${preferred}`);
-						resolve({ port: preferred, server: shared() });
-						return;
-					}
+				void reuse(preferred, options.backend, options.password)
+					.then(ok => {
+						if (ok) {
+							log(`[SPA] reusing compatible proxy on port ${preferred}`);
+							resolve({ port: preferred, server: shared() });
+							return;
+						}
 
-					log(`[SPA] port ${preferred} in use, falling back to random`);
-					server.listen(0, '127.0.0.1');
-				})
+						log(`[SPA] port ${preferred} in use, falling back to random`);
+						server.listen(0, '127.0.0.1');
+					})
 				.catch(reject);
 		});
 

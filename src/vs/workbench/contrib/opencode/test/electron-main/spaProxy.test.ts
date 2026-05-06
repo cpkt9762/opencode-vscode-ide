@@ -367,6 +367,27 @@ suite('SpaProxy', () => {
 		}
 	});
 
+	test('reuse rejects stale proxy when passwords differ', async () => {
+		const dist = createDist({ 'index.html': '<!doctype html><html><head></head><body></body></html>' });
+		const backend = createServer((_request, response) => {
+			response.writeHead(200, { 'content-type': 'application/json' });
+			response.end(JSON.stringify({ ok: true }));
+		});
+		await new Promise<void>(resolve => backend.listen(0, '127.0.0.1', resolve));
+		const address = backend.address();
+		const backendUrl = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
+		const site = await start({ backend: backendUrl, dist });
+
+		try {
+			assert.strictEqual(await reuse(site.port, backendUrl), true);
+			assert.strictEqual(await reuse(site.port, backendUrl, 'differentpassword'), false);
+		} finally {
+			await closeServer(site.server);
+			await closeServer(backend);
+			rmSync(dist, { force: true, recursive: true });
+		}
+	});
+
 	test('25 API prefixes proxied', async () => {
 		const dist = createDist({ 'index.html': '<!doctype html><html><head></head><body></body></html>' });
 		const backend = createServer((request, response) => {
@@ -523,7 +544,7 @@ suite('SpaProxy', () => {
 			const response = await get(site.port, '/opencode-spa-health');
 			assert.strictEqual(response.status, 200);
 			assert.ok(response.type.includes('application/json'));
-			assert.deepStrictEqual(JSON.parse(response.body), { backend: `${backendUrl}/`, ok: true });
+			assert.deepStrictEqual(JSON.parse(response.body), { backend: `${backendUrl}/`, ok: true, password: '' });
 		} finally {
 			await closeServer(site.server);
 			await closeServer(backend);
