@@ -392,12 +392,7 @@ export const BOOTSTRAP = `<script>
         blog("clipboard-write " + text.length + " chars")
       }
     } else if (e.key === "v") {
-      var active = document.activeElement
-      if (!(active && (active.isContentEditable || active.tagName === "INPUT" || active.tagName === "TEXTAREA"))) return
-      e.preventDefault()
-      e.stopPropagation()
-      send("opencode-web.clipboard-read", {})
-      blog("clipboard-read requested")
+      blog("keydown-v: native paste allowed")
     }
   }, true)
   var pendingPaste = false
