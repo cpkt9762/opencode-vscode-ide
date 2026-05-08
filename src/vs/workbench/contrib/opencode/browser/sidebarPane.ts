@@ -810,6 +810,28 @@ export class OpencodeSidebarPane extends ViewPane {
 				return;
 			}
 
+			case "opencode-web.clipboard-image-read": {
+				const requestId = (message as IOpencodeMessage & { id?: unknown }).id;
+				await this.readClipboardImage().then(
+					(data) => {
+						this.messageBridge.send({
+							type: "opencode-web.clipboard-image",
+							id: requestId,
+							data,
+						} as IOpencodeMessage & { id?: unknown; data: string | null });
+					},
+					(error: unknown) => {
+						this.logError("[OpenCode] Failed to read clipboard image", error);
+						this.messageBridge.send({
+							type: "opencode-web.clipboard-image",
+							id: requestId,
+							data: null,
+						} as IOpencodeMessage & { id?: unknown; data: string | null });
+					},
+				);
+				return;
+			}
+
 			case "opencode.vscode.command": {
 				const command = (message as IOpencodeMessage & { command?: unknown }).command;
 				if (typeof command !== "string") {
@@ -1154,6 +1176,20 @@ export class OpencodeSidebarPane extends ViewPane {
 		return this.instantiationService.invokeFunction((accessor) =>
 			accessor.get(IClipboardService).writeText(text),
 		);
+	}
+
+	private readClipboardImage(): Promise<string | null> {
+		return this.instantiationService.invokeFunction(async (accessor) => {
+			const imageData = await accessor.get(IClipboardService).readImage();
+			if (imageData.byteLength === 0) {
+				return null;
+			}
+			const chunks: string[] = [];
+			for (let i = 0; i < imageData.byteLength; i += 0x8000) {
+				chunks.push(String.fromCharCode(...imageData.subarray(i, i + 0x8000)));
+			}
+			return btoa(chunks.join(""));
+		});
 	}
 
 	private logError(message: string, error: unknown): void {
