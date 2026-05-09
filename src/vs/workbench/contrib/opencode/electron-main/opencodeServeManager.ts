@@ -7,7 +7,7 @@ import { type ChildProcess, execSync, type SpawnOptions, spawn } from "child_pro
 // biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
 import { randomBytes } from "crypto";
 // biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
-import { accessSync, constants, existsSync } from "fs";
+import { accessSync, constants, existsSync, mkdirSync } from "fs";
 // biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
 import { request as httpRequest } from "http";
 // biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
@@ -220,6 +220,20 @@ export class OpencodeServeManager
 
 		const deadline = Date.now() + STARTUP_TIMEOUT;
 		const env = { ...mergedEnv };
+		const xdgRoot = join(this.environmentMainService.userDataPath, "opencode-xdg");
+		env.XDG_STATE_HOME = join(xdgRoot, "state");
+		env.XDG_DATA_HOME = join(xdgRoot, "data");
+		env.XDG_CONFIG_HOME = join(xdgRoot, "config");
+		env.XDG_CACHE_HOME = join(xdgRoot, "cache");
+		for (const dir of [
+			env.XDG_STATE_HOME,
+			env.XDG_DATA_HOME,
+			env.XDG_CONFIG_HOME,
+			env.XDG_CACHE_HOME,
+		]) {
+			mkdirSync(dir, { recursive: true });
+		}
+		this.logService.info(`[opencode] XDG state isolated under ${xdgRoot}`);
 		delete env.OPENCODE_SERVER_PASSWORD;
 		env.OPENCODE_SERVER_PASSWORD = this.password;
 		const proc = this.spawnProcess(
