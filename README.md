@@ -29,6 +29,7 @@ The result is a fork where the AI agent behaves like a native VS Code panel: dra
 ## Features
 
 - **Native OpenCode sidebar** — the opencode SPA loaded as a real iframe from a loopback origin, with full file-drop integration from the VS Code explorer.
+- **Agent edit decorations** — files modified by the OpenCode agent are highlighted in the Explorer with state-aware coloring (modified → viewed → cleared). See [docs/agent-edit-decorations.md](docs/agent-edit-decorations.md).
 - **Managed `opencode serve` backend** — auto-start / auto-respawn / port pinning / HTTP Basic auth, all from the Electron main process.
 - **Proposed `opencodeEditor` VS Code API** — a scaffolded proposed API surface (`src/vs/workbench/api/`) so extensions can interact with the agent host.
 - **Smoke-tested drop flow** — Playwright-based sidebar file-drop smoke tests (`test/smoke`) covering real runtime behavior, not just unit stubs.
