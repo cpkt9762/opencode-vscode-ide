@@ -220,20 +220,16 @@ export class OpencodeServeManager
 
 		const deadline = Date.now() + STARTUP_TIMEOUT;
 		const env = { ...mergedEnv };
-		const xdgRoot = join(this.environmentMainService.userDataPath, "opencode-xdg");
-		env.XDG_STATE_HOME = join(xdgRoot, "state");
-		env.XDG_DATA_HOME = join(xdgRoot, "data");
-		env.XDG_CONFIG_HOME = join(xdgRoot, "config");
-		env.XDG_CACHE_HOME = join(xdgRoot, "cache");
-		for (const dir of [
-			env.XDG_STATE_HOME,
-			env.XDG_DATA_HOME,
-			env.XDG_CONFIG_HOME,
-			env.XDG_CACHE_HOME,
-		]) {
-			mkdirSync(dir, { recursive: true });
-		}
-		this.logService.info(`[opencode] XDG state isolated under ${xdgRoot}`);
+		// Isolate XDG_STATE_HOME so the bundled backend's runtime locks/PIDs don't
+		// collide with a system-installed `opencode` CLI/TUI or the original
+		// packages/desktop-electron app (which writes to its own userData).
+		// Leave XDG_DATA_HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME unset so the bundled
+		// backend reads/writes the same sessions DB, config, and model cache as the
+		// user's CLI/TUI — matching packages/desktop-electron/src/main/server.ts.
+		const xdgStateHome = join(this.environmentMainService.userDataPath, "opencode-xdg", "state");
+		env.XDG_STATE_HOME = xdgStateHome;
+		mkdirSync(xdgStateHome, { recursive: true });
+		this.logService.info(`[opencode] XDG_STATE_HOME isolated to ${xdgStateHome}`);
 		delete env.OPENCODE_SERVER_PASSWORD;
 		env.OPENCODE_SERVER_PASSWORD = this.password;
 		const proc = this.spawnProcess(

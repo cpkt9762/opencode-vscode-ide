@@ -791,7 +791,7 @@ suite('OpencodeServeManager / binary discovery', () => {
 		}
 	});
 
-	test('xdg_env_injected_into_spawn', async () => {
+	test('xdg_state_home_isolated_other_xdg_inherited', async () => {
 		const userDataPath = createTempDir(tempDirs);
 		const backend = await mockBackend({ onHealth: request => request === 1 ? { healthy: false } : { healthy: true } });
 		const spawn = fakeSpawn();
@@ -807,12 +807,14 @@ suite('OpencodeServeManager / binary discovery', () => {
 
 		try {
 			await startSpawned(manager, spawn.process, `http://127.0.0.1:${backend.port}`);
-			const xdgRoot = join(userDataPath, 'opencode-xdg');
+			const xdgStateHome = join(userDataPath, 'opencode-xdg', 'state');
 
-			assert.strictEqual(manager.spawnCalls[0].options.env?.XDG_STATE_HOME, join(xdgRoot, 'state'));
-			assert.strictEqual(manager.spawnCalls[0].options.env?.XDG_DATA_HOME, join(xdgRoot, 'data'));
-			assert.strictEqual(manager.spawnCalls[0].options.env?.XDG_CONFIG_HOME, join(xdgRoot, 'config'));
-			assert.strictEqual(manager.spawnCalls[0].options.env?.XDG_CACHE_HOME, join(xdgRoot, 'cache'));
+			assert.strictEqual(manager.spawnCalls[0].options.env?.XDG_STATE_HOME, xdgStateHome);
+			// DATA/CONFIG/CACHE deliberately not set so they inherit the parent
+			// process / system defaults — sessions DB stays shared with CLI/TUI.
+			assert.strictEqual(manager.spawnCalls[0].options.env?.XDG_DATA_HOME, undefined);
+			assert.strictEqual(manager.spawnCalls[0].options.env?.XDG_CONFIG_HOME, undefined);
+			assert.strictEqual(manager.spawnCalls[0].options.env?.XDG_CACHE_HOME, undefined);
 		} finally {
 			await backend.close();
 		}
