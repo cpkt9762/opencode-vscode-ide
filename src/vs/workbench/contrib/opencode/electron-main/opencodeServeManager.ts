@@ -3,7 +3,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 // biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
-import { type ChildProcess, type SpawnOptions, execSync, spawn } from "child_process";
+import { type ChildProcess, execSync, type SpawnOptions, spawn } from "child_process";
 // biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
 import { randomBytes } from "crypto";
 // biome-ignore lint/style/useNodejsImportProtocol: bare specifier required for Electron renderer test loader compatibility.
@@ -63,6 +63,8 @@ export interface IOpencodeServeManager extends IDisposable {
 }
 
 type OpencodeProcessState = "starting" | "running" | "stopped";
+type BinaryResolutionBranch = "override" | "bundled" | "dev-fallback";
+type BinaryResolution = { branch: BinaryResolutionBranch; path: string };
 
 export class OpencodeServeManager
 	extends Disposable
@@ -78,6 +80,7 @@ export class OpencodeServeManager
 	private weStarted = false;
 	private stopRequested = false;
 	private respawnTimer: ReturnType<typeof setTimeout> | undefined;
+	private binaryResolutionBranch: BinaryResolutionBranch | undefined;
 
 	get backendUrl(): string | undefined {
 		return this._backendUrl;
@@ -211,6 +214,9 @@ export class OpencodeServeManager
 				"Failed to find an opencode binary. Configure opencode.binaryPath or add opencode to PATH.",
 			);
 		}
+		this.logService.info(
+			`[opencode] resolved backend via ${this.binaryResolutionBranch}: ${binaryPath}`,
+		);
 
 		const deadline = Date.now() + STARTUP_TIMEOUT;
 		const env = { ...mergedEnv };
@@ -473,11 +479,19 @@ export class OpencodeServeManager
 	}
 
 	private findBinaryPath(env: NodeJS.ProcessEnv = process.env): string | undefined {
+		const resolution = this.resolveBinaryPath(env);
+		this.binaryResolutionBranch = resolution?.branch;
+		return resolution?.path;
+	}
+
+	private resolveBinaryPath(
+		env: NodeJS.ProcessEnv = process.env,
+	): BinaryResolution | undefined {
 		const configuredPath = this.getBinaryPath();
 		if (configuredPath) {
 			const resolvedPath = this.resolveConfiguredBinaryPath(configuredPath);
 			if (resolvedPath) {
-				return resolvedPath;
+				return { branch: "override", path: resolvedPath };
 			}
 
 			this.logService.warn(
@@ -486,21 +500,70 @@ export class OpencodeServeManager
 			);
 		}
 
+		const bundledPath = this.getBundledBinaryPath();
+		if (bundledPath) {
+			return { branch: "bundled", path: bundledPath };
+		}
+
+		if (this.environmentMainService.isBuilt) {
+			throw new Error(
+				`Bundled OpenCode backend missing at ${this.expectedBundledBinaryPath()}. Please reinstall OpenCode IDE.`,
+			);
+		}
+
 		const pathBinary = this.findBinaryOnPath(env);
 		if (pathBinary) {
-			return pathBinary;
+			return { branch: "dev-fallback", path: pathBinary };
 		}
 
 		for (const directory of SEARCH_DIRECTORIES) {
 			for (const candidateName of this.getCandidateBinaryNames()) {
 				const candidatePath = join(directory, candidateName);
 				if (this.isExecutable(candidatePath)) {
-					return candidatePath;
+					return { branch: "dev-fallback", path: candidatePath };
 				}
 			}
 		}
 
 		return undefined;
+	}
+
+	private getBundledBinaryPath(): string | undefined {
+		try {
+			const resourcesPath = process.resourcesPath;
+			if (!resourcesPath) {
+				return undefined;
+			}
+
+			const candidatePath = join(
+				resourcesPath,
+				"opencode",
+				"bin",
+				this.getBundledBinaryName(),
+			);
+			accessSync(candidatePath, constants.X_OK);
+			return candidatePath;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private expectedBundledBinaryPath(): string {
+		try {
+			const resourcesPath = process.resourcesPath;
+			if (resourcesPath) {
+				return join(
+					resourcesPath,
+					"opencode",
+					"bin",
+					this.getBundledBinaryName(),
+				);
+			}
+		} catch {
+			// Fall through to a relative diagnostic path for non-Electron test contexts.
+		}
+
+		return join("opencode", "bin", this.getBundledBinaryName());
 	}
 
 	protected async getMergedEnv(): Promise<NodeJS.ProcessEnv> {
@@ -646,6 +709,10 @@ export class OpencodeServeManager
 		return platform() === "win32"
 			? ["opencode.exe", "opencode.cmd", "opencode"]
 			: ["opencode"];
+	}
+
+	private getBundledBinaryName(): string {
+		return platform() === "win32" ? "opencode.exe" : "opencode";
 	}
 
 	private getAutoStart(): boolean {
