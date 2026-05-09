@@ -104,9 +104,17 @@ make smoke-opencode
 
 See `Makefile` for every available target.
 
-### Getting the opencode backend binary
+### opencode backend binary
 
-The `opencode serve` binary is **not** checked into git — it's a ~96 MB native binary that doesn't belong in a source repo. Place your platform binary at `resources/opencode-bin/opencode-<platform>-<arch>` (for example `resources/opencode-bin/opencode-darwin-arm64`), or point `opencode.binaryPath` at an existing installation.
+The `opencode serve` binary is bundled automatically by `make build`. The build pipeline:
+
+1. **Pins** the binary via `build/opencode-backend.json` — a manifest that records the source commit and sha256 for each platform.
+2. **Validates and copies** the binary into `.vendored/opencode/bin/opencode` (run `make vendor-opencode-backend` to rebuild + revalidate, or `make vendor-opencode-backend-validate-only` to re-validate sha256 and copy without rebuilding).
+3. **Packages** the validated binary into the `.app` at `Contents/Resources/opencode/bin/opencode` as part of the gulp packaging step.
+
+In a packaged build the IDE always uses the bundled binary. If the bundled binary is missing at startup, the IDE refuses to start and shows a "Please reinstall OpenCode IDE" error.
+
+For local development you can override the binary with the `opencode.binaryPath` setting — this is ignored in packaged builds.
 
 ---
 
