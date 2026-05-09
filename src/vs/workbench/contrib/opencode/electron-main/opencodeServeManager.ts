@@ -230,6 +230,12 @@ export class OpencodeServeManager
 		env.XDG_STATE_HOME = xdgStateHome;
 		mkdirSync(xdgStateHome, { recursive: true });
 		this.logService.info(`[opencode] XDG_STATE_HOME isolated to ${xdgStateHome}`);
+		// Force the backend to use the canonical `opencode.db` instead of a
+		// channel-suffixed file (e.g. `opencode-build-v1.14.18.db` for forks). This
+		// keeps the IDE's session history in sync with the user's `opencode` CLI/TUI
+		// and the original packages/desktop-electron app, both of which target the
+		// same shared DB. See packages/opencode/src/storage/db.ts::getChannelPath().
+		env.OPENCODE_DISABLE_CHANNEL_DB = "1";
 		delete env.OPENCODE_SERVER_PASSWORD;
 		env.OPENCODE_SERVER_PASSWORD = this.password;
 		const proc = this.spawnProcess(
