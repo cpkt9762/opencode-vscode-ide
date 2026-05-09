@@ -73,13 +73,14 @@ async function main(buildDir?: string): Promise<void> {
 
 	const appRoot = path.join(buildDir, `VSCode-darwin-${arch}`);
 	const appName = product.nameLong + '.app';
+	const appPath = path.join(appRoot, appName);
 	const infoPlistPath = path.resolve(appRoot, appName, 'Contents', 'Info.plist');
 	const embeddedInfoPlistPath = product.embedded
 		? path.resolve(appRoot, appName, 'Contents', 'Applications', `${product.embedded.nameLong}.app`, 'Contents', 'Info.plist')
 		: undefined;
 
 	const appOpts: SignOptions = {
-		app: path.join(appRoot, appName),
+		app: appPath,
 		platform: 'darwin',
 		optionsForFile: (filePath) => ({
 			entitlements: getEntitlementsForFile(filePath),
@@ -168,6 +169,22 @@ async function main(buildDir?: string): Promise<void> {
 				`${embeddedInfoPlistPath}`
 			]);
 		}
+	}
+
+	const opencodeBinaryPath = path.join(appPath, 'Contents', 'Resources', 'opencode', 'bin', 'opencode');
+	if (fs.existsSync(opencodeBinaryPath)) {
+		console.log(`[opencode-codesign] signing ${opencodeBinaryPath}`);
+		await retrySignOnKeychainError(() => spawn('codesign', [
+			'--sign', identity ?? '-',
+			'--keychain', path.join(tempDir, 'buildagent.keychain'),
+			'--options', 'runtime',
+			'--timestamp',
+			'--force',
+			'--entitlements', path.join(baseDir, 'darwin', 'opencode-bin-entitlements.plist'),
+			opencodeBinaryPath
+		]));
+	} else {
+		console.warn(`[opencode-codesign] skipping ${opencodeBinaryPath} (missing — likely watch/dev build)`);
 	}
 
 	await retrySignOnKeychainError(() => sign(appOpts));
