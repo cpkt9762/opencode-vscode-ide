@@ -10,7 +10,7 @@ import type { ChildProcess, SpawnOptions } from 'child_process';
 // biome-ignore lint/style/useNodejsImportProtocol: electron-main unit tests use node builtins directly.
 import { EventEmitter } from 'events';
 // biome-ignore lint/style/useNodejsImportProtocol: electron-main unit tests use node builtins directly.
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 // biome-ignore lint/style/useNodejsImportProtocol: electron-main unit tests use node builtins directly.
 import { createServer, type Server } from 'http';
 // biome-ignore lint/style/useNodejsImportProtocol: electron-main unit tests use node builtins directly.
@@ -42,7 +42,7 @@ type FakeChildProcess = EventEmitter & {
 	simulateExit(code: number | null, signal: NodeJS.Signals | null): void;
 };
 type ManagerInternals = {
-	findBinaryPath(): string | undefined;
+	findBinaryPath(env?: NodeJS.ProcessEnv): string | undefined;
 	isHealthy(url: string, password: string | undefined): Promise<boolean>;
 	waitForHealthy(url: string, deadline: number, password: string | undefined): Promise<void>;
 };
@@ -138,7 +138,15 @@ function fakeSpawn(opts: { exitOnSigterm?: boolean } = {}) {
 	};
 }
 
-const stubEnvironmentMainService: IEnvironmentMainService = { args: {} } as IEnvironmentMainService;
+function createMockEnvironmentMainService(opts: { isBuilt?: boolean; userDataPath?: string } = {}): IEnvironmentMainService {
+	return {
+		args: {},
+		isBuilt: opts.isBuilt ?? false,
+		userDataPath: opts.userDataPath ?? join(tmpdir(), 'opencode-serve-manager-user-data'),
+	} as IEnvironmentMainService;
+}
+
+const stubEnvironmentMainService = createMockEnvironmentMainService();
 
 class TestableOpencodeServeManager extends OpencodeServeManager {
 	spawnCalls: { command: string; args: readonly string[]; options: SpawnOptions }[] = [];
@@ -228,6 +236,11 @@ function writeExecutable(dir: string, name = 'opencode') {
 	writeFileSync(file, '#!/bin/sh\nexit 0\n');
 	chmodSync(file, 0o755);
 	return file;
+}
+
+function writeBundledExecutable(resourcesPath: string) {
+	mkdirSync(join(resourcesPath, 'opencode', 'bin'), { recursive: true });
+	return writeExecutable(join(resourcesPath, 'opencode', 'bin'), process.platform === 'win32' ? 'opencode.exe' : 'opencode');
 }
 
 async function unusedPort(): Promise<number> {
@@ -693,6 +706,116 @@ suite('OpencodeServeManager / binary discovery', () => {
 
 	setup(() => {
 		originalPath = process.env.PATH;
+	});
+
+	test('findBinaryPath_bundled_wins_when_built_no_override', () => {
+		const resourcesPath = createTempDir(tempDirs);
+		const bundledBinary = writeBundledExecutable(resourcesPath);
+		// Electron-only process.resourcesPath is absent from Node's Process type in tests.
+		const processWithResourcesPath = process as { resourcesPath?: string };
+		const originalResourcesPath = processWithResourcesPath.resourcesPath;
+		processWithResourcesPath.resourcesPath = resourcesPath;
+		try {
+			manager = new TestableOpencodeServeManager(
+				configuration({ 'opencode.binaryPath': '' }),
+				new NullLogService(),
+				createMockEnvironmentMainService({ isBuilt: true }),
+			);
+
+			assert.strictEqual(internals(manager).findBinaryPath(), bundledBinary);
+		} finally {
+			processWithResourcesPath.resourcesPath = originalResourcesPath;
+		}
+	});
+
+	test('findBinaryPath_override_wins_over_bundled', () => {
+		const resourcesPath = createTempDir(tempDirs);
+		writeBundledExecutable(resourcesPath);
+		const overrideBinary = writeExecutable(createTempDir(tempDirs));
+		// Electron-only process.resourcesPath is absent from Node's Process type in tests.
+		const processWithResourcesPath = process as { resourcesPath?: string };
+		const originalResourcesPath = processWithResourcesPath.resourcesPath;
+		processWithResourcesPath.resourcesPath = resourcesPath;
+		try {
+			manager = new TestableOpencodeServeManager(
+				configuration({ 'opencode.binaryPath': overrideBinary }),
+				new NullLogService(),
+				createMockEnvironmentMainService({ isBuilt: true }),
+			);
+
+			assert.strictEqual(internals(manager).findBinaryPath(), overrideBinary);
+		} finally {
+			processWithResourcesPath.resourcesPath = originalResourcesPath;
+		}
+	});
+
+	test('findBinaryPath_throws_when_built_and_no_bundled', () => {
+		const resourcesPath = createTempDir(tempDirs);
+		// Electron-only process.resourcesPath is absent from Node's Process type in tests.
+		const processWithResourcesPath = process as { resourcesPath?: string };
+		const originalResourcesPath = processWithResourcesPath.resourcesPath;
+		processWithResourcesPath.resourcesPath = resourcesPath;
+		try {
+			manager = new TestableOpencodeServeManager(
+				configuration({ 'opencode.binaryPath': '' }),
+				new NullLogService(),
+				createMockEnvironmentMainService({ isBuilt: true }),
+			);
+			const activeManager = manager;
+
+			assert.throws(() => internals(activeManager).findBinaryPath(), /Please reinstall OpenCode IDE/);
+		} finally {
+			processWithResourcesPath.resourcesPath = originalResourcesPath;
+		}
+	});
+
+	test('findBinaryPath_dev_fallback_to_PATH_when_not_built', () => {
+		const resourcesPath = createTempDir(tempDirs);
+		const pathDir = createTempDir(tempDirs);
+		const pathBinary = writeExecutable(pathDir);
+		process.env.PATH = `${pathDir}:${originalPath ?? ''}`;
+		// Electron-only process.resourcesPath is absent from Node's Process type in tests.
+		const processWithResourcesPath = process as { resourcesPath?: string };
+		const originalResourcesPath = processWithResourcesPath.resourcesPath;
+		processWithResourcesPath.resourcesPath = resourcesPath;
+		try {
+			manager = new TestableOpencodeServeManager(
+				configuration({ 'opencode.binaryPath': '' }),
+				new NullLogService(),
+				createMockEnvironmentMainService({ isBuilt: false }),
+			);
+
+			assert.strictEqual(internals(manager).findBinaryPath(), pathBinary);
+		} finally {
+			processWithResourcesPath.resourcesPath = originalResourcesPath;
+		}
+	});
+
+	test('xdg_env_injected_into_spawn', async () => {
+		const userDataPath = createTempDir(tempDirs);
+		const backend = await mockBackend({ onHealth: request => request === 1 ? { healthy: false } : { healthy: true } });
+		const spawn = fakeSpawn();
+		manager = new TestableOpencodeServeManager(
+			configuration({
+				'opencode.binaryPath': writeExecutable(createTempDir(tempDirs)),
+				'opencode.port': backend.port,
+			}),
+			new NullLogService(),
+			createMockEnvironmentMainService({ isBuilt: false, userDataPath }),
+		);
+		manager.nextProcess = spawn.process;
+
+		try {
+			await startSpawned(manager, spawn.process, `http://127.0.0.1:${backend.port}`);
+			const xdgRoot = join(userDataPath, 'opencode-xdg');
+
+			assert.strictEqual(manager.spawnCalls[0].options.env?.XDG_STATE_HOME, join(xdgRoot, 'state'));
+			assert.strictEqual(manager.spawnCalls[0].options.env?.XDG_DATA_HOME, join(xdgRoot, 'data'));
+			assert.strictEqual(manager.spawnCalls[0].options.env?.XDG_CONFIG_HOME, join(xdgRoot, 'config'));
+			assert.strictEqual(manager.spawnCalls[0].options.env?.XDG_CACHE_HOME, join(xdgRoot, 'cache'));
+		} finally {
+			await backend.close();
+		}
 	});
 
 	test('uses opencode.binaryPath when configured and executable', () => {
