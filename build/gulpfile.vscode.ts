@@ -651,6 +651,28 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			productJsonFn: () => productJsonContents
 		});
 
+		const vendoredOpencodeRoot = path.resolve(import.meta.dirname, '..', '.vendored', 'opencode');
+		const vendoredOpencodeBinary = path.join(vendoredOpencodeRoot, 'bin', platform === 'win32' ? 'opencode.exe' : 'opencode');
+		const vendoredOpencodeVersion = path.join(vendoredOpencodeRoot, 'VERSION.json');
+		if (!fs.existsSync(vendoredOpencodeBinary)) {
+			throw new Error(`[opencode-bundle] vendored backend missing at ${vendoredOpencodeBinary}. Run 'make vendor-opencode-backend' from opencode-ide-fork/ first.`);
+		}
+		if (!fs.existsSync(vendoredOpencodeVersion)) {
+			throw new Error(`[opencode-bundle] vendored backend VERSION.json missing at ${vendoredOpencodeVersion}. Run 'make vendor-opencode-backend' from opencode-ide-fork/ first.`);
+		}
+
+		let opencodeBackend: NodeJS.ReadWriteStream = gulp.src([vendoredOpencodeBinary, vendoredOpencodeVersion], { base: vendoredOpencodeRoot, dot: true });
+		if (platform !== 'win32') {
+			opencodeBackend = opencodeBackend.pipe(util.setExecutableBit('**/bin/opencode'));
+		}
+		opencodeBackend = opencodeBackend.pipe(rename(f => f.dirname = path.join(
+			platform === 'darwin'
+				? `${product.nameLong}.app/Contents/Resources/opencode`
+				: path.join(versionedResourcesFolder, 'resources', 'opencode'),
+			f.dirname ?? ''
+		)));
+		result = es.merge(result, opencodeBackend);
+
 		return result.pipe(vfs.dest(destination));
 	};
 	task.taskName = `package-${platform}-${arch}`;
