@@ -49,5 +49,8 @@ dist
 # Shipped opencode backend binaries live outside git (too large for GitHub).
 # They are downloaded/placed at build time by the fork's install scripts.
 resources/opencode-bin/
+.vendored/
+# The manifest file is required in source control for reproducible vendoring,
+# so negate the global JSON ignore rule for this specific backend manifest.
+!build/opencode-backend.json
 .sisyphus/
-

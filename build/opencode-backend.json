@@ -1,0 +1,31 @@
+{
+  "_comment": "Pinned opencode backend artifact for the IDE fork. See .sisyphus/plans/opencode-ide-fork-bundle-backend-plan.md (Step 3 / §4.6). Non-host sha256 entries are filled by CI runners on each target platform. The vendor-opencode-backend Makefile target validates that the host platform's binary at `src` matches `sha256` before copying into .vendored/.",
+  "version": "1.14.18+ide.0",
+  "commit": "e96b9f03a5d087fcb6ba12234a12c51245e859af",
+  "commitShort": "e96b9f03a",
+  "builtFrom": "0.0.0-build/v1.14.18-202605091114",
+  "builtAt": "2026-05-09T11:14:00Z",
+  "platforms": {
+    "darwin-arm64": {
+      "src": "../packages/opencode/dist/opencode-darwin-arm64/bin/opencode",
+      "sha256": "bff4221276b0b323bd3d0db9f5805f91f47a5573b29b4531e65f22592dd07668",
+      "size": 101127328
+    },
+    "darwin-x64": {
+      "src": "../packages/opencode/dist/opencode-darwin-x64/bin/opencode",
+      "sha256": null
+    },
+    "linux-x64": {
+      "src": "../packages/opencode/dist/opencode-linux-x64/bin/opencode",
+      "sha256": null
+    },
+    "linux-arm64": {
+      "src": "../packages/opencode/dist/opencode-linux-arm64/bin/opencode",
+      "sha256": null
+    },
+    "win32-x64": {
+      "src": "../packages/opencode/dist/opencode-windows-x64/bin/opencode.exe",
+      "sha256": null
+    }
+  }
+}

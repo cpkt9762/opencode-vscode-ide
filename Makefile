@@ -6,6 +6,8 @@ REPO := $(abspath $(ROOT)/..)
 SPA_SRC := $(REPO)/packages/app
 SPA_DIST := $(SPA_SRC)/dist
 SPA_DST := $(ROOT)/src/vs/workbench/contrib/opencode/media/spa
+OPENCODE_BACKEND_VERSION := $(shell node -e "console.log(require('$(ROOT)/build/opencode-backend.json').builtFrom)" 2>/dev/null)
+export OPENCODE_VERSION := $(OPENCODE_BACKEND_VERSION)
 APP_NAME    := OpenCode IDE
 APP_BUNDLE  := $(APP_NAME).app
 BUILD_OUT   := $(REPO)/VSCode-darwin-arm64/$(APP_BUNDLE)
@@ -25,6 +27,10 @@ help:
 	@echo "  SPA vendor:"
 	@echo "    make vendor-spa    rebuild SPA from packages/app and copy to media/spa/"
 	@echo "    make clean-spa     remove vendored SPA"
+	@echo ""
+	@echo "  Bundle backend:"
+	@echo "    make vendor-opencode-backend             rebuild + validate + copy opencode binary into .vendored/"
+	@echo "    make vendor-opencode-backend-validate-only  validate + copy without rebuild"
 	@echo ""
 	@echo "  Run:"
 	@echo "    make run           launch dev build via scripts/code.sh"
@@ -65,6 +71,15 @@ vendor-spa:
 	mkdir -p "$(SPA_DST)"
 	cp -R "$(SPA_DIST)/." "$(SPA_DST)/"
 	@echo ">> Vendored $$(ls -1 $(SPA_DST) | wc -l | tr -d ' ') top-level entries"
+
+.PHONY: vendor-opencode-backend
+vendor-opencode-backend:
+	cd $(REPO) && bun packages/opencode/script/build.ts --single --skip-install
+	node $(ROOT)/build/lib/vendor-opencode-backend.js
+
+.PHONY: vendor-opencode-backend-validate-only
+vendor-opencode-backend-validate-only:
+	node $(ROOT)/build/lib/vendor-opencode-backend.js
 
 .PHONY: clean-spa
 clean-spa:
