@@ -72,4 +72,35 @@ suite('SSEParser', () => {
 			{ type: 'deleted', sessionID: 'ses_1' },
 		]);
 	});
+
+	test('file.edited data event yields flattened file event', () => {
+		assert.deepStrictEqual(parseSSELine('data: {"type":"file.edited","properties":{"file":"/tmp/a.ts"}}'), { type: 'file.edited', file: '/tmp/a.ts' });
+	});
+
+	test('file.watcher.updated data event yields flattened watcher event', () => {
+		assert.deepStrictEqual(parseSSELine('data: {"type":"file.watcher.updated","properties":{"file":"/tmp/a.ts","event":"unlink"}}'), { type: 'file.watcher.updated', file: '/tmp/a.ts', event: 'unlink' });
+	});
+
+	test('message.part.updated data event preserves edit tool metadata', () => {
+		assert.deepStrictEqual(parseSSELine('data: {"type":"message.part.updated","properties":{"sessionID":"s","part":{"type":"tool","tool":"edit","state":{"status":"completed","metadata":{"filepath":"/tmp/a.ts","diff":"@@ -1 +1 @@"}}},"time":1}}'), {
+			type: 'message.part.updated',
+			sessionID: 's',
+			part: {
+				type: 'tool',
+				tool: 'edit',
+				state: {
+					status: 'completed',
+					metadata: {
+						filepath: '/tmp/a.ts',
+						diff: '@@ -1 +1 @@',
+					},
+				},
+			},
+			time: 1,
+		});
+	});
+
+	test('server unknown event type remains undefined', () => {
+		assert.strictEqual(parseSSELine('data: {"type":"server.completely.unknown.event","properties":{}}'), undefined);
+	});
 });

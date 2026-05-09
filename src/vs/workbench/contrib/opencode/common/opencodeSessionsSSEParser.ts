@@ -10,6 +10,9 @@ const eventTypes = new Set<IOpencodeSessionEvent['type']>([
 	'deleted',
 	'idle',
 	'status',
+	'file.edited',
+	'file.watcher.updated',
+	'message.part.updated',
 ]);
 
 const backendEventTypes = new Map<string, IOpencodeSessionEvent['type']>([
@@ -18,6 +21,9 @@ const backendEventTypes = new Map<string, IOpencodeSessionEvent['type']>([
 	['session.deleted', 'deleted'],
 	['session.idle', 'idle'],
 	['session.status', 'status'],
+	['file.edited', 'file.edited'],
+	['file.watcher.updated', 'file.watcher.updated'],
+	['message.part.updated', 'message.part.updated'],
 ]);
 
 type SSEField = {
