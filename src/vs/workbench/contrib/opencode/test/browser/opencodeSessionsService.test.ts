@@ -16,7 +16,10 @@ import type {
 	OpencodeSessionsEventStreamFactory,
 } from "../../browser/opencodeSessionsService.js";
 import { OpencodeSessionsService } from "../../browser/opencodeSessionsService.js";
+import type { IAgentEditTracker } from "../../common/agentEditTracker.js";
 import type {
+	HunkRange,
+	IOpencodePart,
 	IOpencodeSession,
 	IOpencodeSessionEvent,
 	IOpencodeSessionStatusMap,
@@ -35,6 +38,26 @@ type FetchBackend = {
 };
 
 type StreamItem = IOpencodeSessionEvent | string;
+type ToolMetadata = NonNullable<NonNullable<IOpencodePart["state"]>["metadata"]>;
+
+type AgentEditTrackerHarness = {
+	readonly service: IAgentEditTracker;
+	readonly markModifiedCalls: URI[];
+	readonly markRemovedCalls: URI[];
+	readonly attachHunksCalls: {
+		readonly uri: URI;
+		readonly hunks: readonly HunkRange[];
+		readonly time: number;
+	}[];
+	clearCalls: number;
+};
+
+type SSEHarness = {
+	readonly workspace: WorkspaceHarness;
+	readonly service: OpencodeSessionsService;
+	readonly streams: TestEventStream[];
+	readonly tracker: AgentEditTrackerHarness;
+};
 
 class TestEventStream implements AsyncIterable<StreamItem> {
 	private readonly values: StreamItem[] = [];
@@ -184,6 +207,40 @@ function createConfigurationService(): IConfigurationService {
 	} as unknown as IConfigurationService;
 }
 
+function createAgentEditTracker(): AgentEditTrackerHarness {
+	const markModifiedCalls: URI[] = [];
+	const markRemovedCalls: URI[] = [];
+	const attachHunksCalls: AgentEditTrackerHarness["attachHunksCalls"] = [];
+	const harness: AgentEditTrackerHarness = {
+		service: {
+			_serviceBrand: undefined,
+			onDidChange: Event.None,
+			trackedUris: [],
+			markModified(uri) {
+				markModifiedCalls.push(uri);
+			},
+			attachHunks(uri, hunks, time) {
+				attachHunksCalls.push({ uri, hunks, time });
+			},
+			markViewed() {},
+			markRemoved(uri) {
+				markRemovedCalls.push(uri);
+			},
+			clear() {
+				harness.clearCalls += 1;
+			},
+			getEntry() {
+				return undefined;
+			},
+		},
+		markModifiedCalls,
+		markRemovedCalls,
+		attachHunksCalls,
+		clearCalls: 0,
+	};
+	return harness;
+}
+
 function jsonContext(body: unknown, status = 200): IRequestContext {
 	return {
 		res: {
@@ -251,6 +308,7 @@ function createService(input: {
 	readonly workspace: WorkspaceHarness;
 	readonly requestService: IRequestService;
 	readonly eventStreamFactory?: OpencodeSessionsEventStreamFactory;
+	readonly agentEditTracker?: IAgentEditTracker;
 	readonly ports?: Record<string, number>;
 	readonly spaProxyService?: ISpaProxyService;
 }): OpencodeSessionsService {
@@ -264,7 +322,62 @@ function createService(input: {
 		createConfigurationService(),
 		input.requestService,
 		input.eventStreamFactory ?? createIdleEventStreamFactory(),
+		input.agentEditTracker ?? createAgentEditTracker().service,
 	);
+}
+
+function createSSEHarness(): SSEHarness {
+	const workspace = createWorkspaceHarness("/workspace/a");
+	const streams: TestEventStream[] = [];
+	const tracker = createAgentEditTracker();
+	return {
+		workspace,
+		streams,
+		tracker,
+		service: createService({
+			workspace,
+			requestService: createRequestService(
+				{ "http://127.0.0.1:4101": { sessions: [] } },
+				[],
+			),
+			eventStreamFactory: createIdleEventStreamFactory(streams),
+			agentEditTracker: tracker.service,
+		}),
+	};
+}
+
+async function startSSEHarness(harness: SSEHarness): Promise<void> {
+	await harness.service.start();
+	await waitFor(() => harness.streams.length === 1, "SSE stream was not opened");
+}
+
+function disposeSSEHarness(harness: SSEHarness): void {
+	harness.service.dispose();
+	harness.workspace.dispose();
+}
+
+function assertTrackerUntouched(tracker: AgentEditTrackerHarness): void {
+	assert.strictEqual(tracker.markModifiedCalls.length, 0);
+	assert.strictEqual(tracker.markRemovedCalls.length, 0);
+	assert.strictEqual(tracker.attachHunksCalls.length, 0);
+	assert.strictEqual(tracker.clearCalls, 0);
+}
+
+function completedToolEvent(
+	tool: string,
+	metadata: ToolMetadata,
+	time = 1234,
+): IOpencodeSessionEvent {
+	return {
+		type: "message.part.updated",
+		sessionID: "s1",
+		time,
+		part: {
+			type: "tool",
+			tool,
+			state: { status: "completed", metadata },
+		},
+	};
 }
 
 async function timeout(ms: number): Promise<void> {
@@ -386,6 +499,8 @@ suite("OpencodeSessionsService", () => {
 				{ "http://127.0.0.1:4101": { sessions: [] } },
 				calls,
 			),
+			undefined,
+			createAgentEditTracker().service,
 		);
 
 		try {
@@ -397,7 +512,7 @@ suite("OpencodeSessionsService", () => {
 
 			assert.deepStrictEqual(fetchCalls, [
 				{
-					url: "http://127.0.0.1:4101/event",
+					url: "http://127.0.0.1:4101/event?directory=%2Fworkspace%2Fa",
 					accept: "text/event-stream",
 				},
 			]);
@@ -444,6 +559,300 @@ suite("OpencodeSessionsService", () => {
 		} finally {
 			service.dispose();
 			workspace.dispose();
+		}
+	});
+
+	test("SSE file.edited marks tracker URI modified", async () => {
+		const harness = createSSEHarness();
+
+		try {
+			await startSSEHarness(harness);
+			harness.streams[0].push({
+				type: "file.edited",
+				file: "/workspace/a/src/file.ts",
+			});
+
+			await waitFor(
+				() => harness.tracker.markModifiedCalls.length === 1,
+				"file.edited did not mark tracker URI modified",
+			);
+			assert.strictEqual(
+				harness.tracker.markModifiedCalls[0].toString(),
+				URI.file("/workspace/a/src/file.ts").toString(),
+			);
+			assert.strictEqual(harness.tracker.markRemovedCalls.length, 0);
+			assert.strictEqual(harness.tracker.attachHunksCalls.length, 0);
+		} finally {
+			disposeSSEHarness(harness);
+		}
+	});
+
+	test("SSE file.watcher.updated unlink marks tracker URI removed", async () => {
+		const harness = createSSEHarness();
+
+		try {
+			await startSSEHarness(harness);
+			harness.streams[0].push({
+				type: "file.watcher.updated",
+				file: "/workspace/a/src/deleted.ts",
+				event: "unlink",
+			});
+
+			await waitFor(
+				() => harness.tracker.markRemovedCalls.length === 1,
+				"file.watcher.updated unlink did not mark tracker URI removed",
+			);
+			assert.strictEqual(
+				harness.tracker.markRemovedCalls[0].toString(),
+				URI.file("/workspace/a/src/deleted.ts").toString(),
+			);
+			assert.strictEqual(harness.tracker.markModifiedCalls.length, 0);
+			assert.strictEqual(harness.tracker.attachHunksCalls.length, 0);
+		} finally {
+			disposeSSEHarness(harness);
+		}
+	});
+
+	test("SSE file.watcher.updated change leaves tracker untouched", async () => {
+		const harness = createSSEHarness();
+
+		try {
+			await startSSEHarness(harness);
+			harness.streams[0].push({
+				type: "file.watcher.updated",
+				file: "/workspace/a/src/changed.ts",
+				event: "change",
+			});
+
+			await timeout(20);
+			assertTrackerUntouched(harness.tracker);
+		} finally {
+			disposeSSEHarness(harness);
+		}
+	});
+
+	test("SSE completed edit tool attaches parsed hunks", async () => {
+		const harness = createSSEHarness();
+
+		try {
+			await startSSEHarness(harness);
+			harness.streams[0].push(
+				completedToolEvent("edit", {
+					filepath: "/workspace/a/src/edit.ts",
+					diff: "@@ -1 +1 @@\n-old\n+new\n",
+				}, 4321),
+			);
+
+			await waitFor(
+				() => harness.tracker.attachHunksCalls.length === 1,
+				"completed edit tool did not attach hunks",
+			);
+			assert.strictEqual(
+				harness.tracker.attachHunksCalls[0].uri.toString(),
+				URI.file("/workspace/a/src/edit.ts").toString(),
+			);
+			assert.deepStrictEqual(harness.tracker.attachHunksCalls[0].hunks, [
+				{ modifiedStartLine: 1, modifiedLineCount: 1 },
+			]);
+			assert.strictEqual(harness.tracker.attachHunksCalls[0].time, 4321);
+			assert.strictEqual(harness.tracker.markModifiedCalls.length, 0);
+			assert.strictEqual(harness.tracker.markRemovedCalls.length, 0);
+		} finally {
+			disposeSSEHarness(harness);
+		}
+	});
+
+	test("SSE completed write tool attaches parsed hunks", async () => {
+		const harness = createSSEHarness();
+
+		try {
+			await startSSEHarness(harness);
+			harness.streams[0].push(
+				completedToolEvent("write", {
+					filepath: "/workspace/a/src/write.ts",
+					diff: "@@ -2 +5,3 @@\n-old\n+new\n",
+				}, 5678),
+			);
+
+			await waitFor(
+				() => harness.tracker.attachHunksCalls.length === 1,
+				"completed write tool did not attach hunks",
+			);
+			assert.strictEqual(
+				harness.tracker.attachHunksCalls[0].uri.toString(),
+				URI.file("/workspace/a/src/write.ts").toString(),
+			);
+			assert.deepStrictEqual(harness.tracker.attachHunksCalls[0].hunks, [
+				{ modifiedStartLine: 5, modifiedLineCount: 3 },
+			]);
+			assert.strictEqual(harness.tracker.attachHunksCalls[0].time, 5678);
+		} finally {
+			disposeSSEHarness(harness);
+		}
+	});
+
+	test("SSE completed multiedit tool attaches hunks in result order", async () => {
+		const harness = createSSEHarness();
+
+		try {
+			await startSSEHarness(harness);
+			harness.streams[0].push(
+				completedToolEvent("multiedit", {
+					results: [
+						{
+							filepath: "/workspace/a/src/first.ts",
+							diff: "@@ -1 +2 @@\n-a\n+b\n",
+						},
+						{
+							filepath: "/workspace/a/src/second.ts",
+							diff: "@@ -3 +4,2 @@\n-c\n+d\n",
+						},
+					],
+				}, 6789),
+			);
+
+			await waitFor(
+				() => harness.tracker.attachHunksCalls.length === 2,
+				"completed multiedit tool did not attach hunks for each result",
+			);
+			assert.deepStrictEqual(
+				harness.tracker.attachHunksCalls.map((call) => call.uri.toString()),
+				[
+					URI.file("/workspace/a/src/first.ts").toString(),
+					URI.file("/workspace/a/src/second.ts").toString(),
+				],
+			);
+			assert.deepStrictEqual(harness.tracker.attachHunksCalls[0].hunks, [
+				{ modifiedStartLine: 2, modifiedLineCount: 1 },
+			]);
+			assert.deepStrictEqual(harness.tracker.attachHunksCalls[1].hunks, [
+				{ modifiedStartLine: 4, modifiedLineCount: 2 },
+			]);
+			assert.deepStrictEqual(
+				harness.tracker.attachHunksCalls.map((call) => call.time),
+				[6789, 6789],
+			);
+		} finally {
+			disposeSSEHarness(harness);
+		}
+	});
+
+	test("SSE completed multiedit tool skips malformed results", async () => {
+		const harness = createSSEHarness();
+
+		try {
+			await startSSEHarness(harness);
+			harness.streams[0].push(
+				completedToolEvent("multiedit", {
+					results: [
+						{
+							filepath: "/workspace/a/src/valid.ts",
+							diff: "@@ -1 +7 @@\n-a\n+b\n",
+						},
+						{ filepath: "/workspace/a/src/malformed.ts" },
+					],
+				}, 7890),
+			);
+
+			await waitFor(
+				() => harness.tracker.attachHunksCalls.length === 1,
+				"completed multiedit tool did not skip malformed result",
+			);
+			assert.strictEqual(
+				harness.tracker.attachHunksCalls[0].uri.toString(),
+				URI.file("/workspace/a/src/valid.ts").toString(),
+			);
+			assert.deepStrictEqual(harness.tracker.attachHunksCalls[0].hunks, [
+				{ modifiedStartLine: 7, modifiedLineCount: 1 },
+			]);
+			assert.strictEqual(harness.tracker.attachHunksCalls[0].time, 7890);
+		} finally {
+			disposeSSEHarness(harness);
+		}
+	});
+
+	test("SSE completed apply_patch tool leaves tracker hunks untouched", async () => {
+		const harness = createSSEHarness();
+
+		try {
+			await startSSEHarness(harness);
+			harness.streams[0].push(
+				completedToolEvent("apply_patch", {
+					filepath: "/workspace/a/src/patched.ts",
+					diff: "@@ -1 +1 @@\n-a\n+b\n",
+				}),
+			);
+
+			await timeout(20);
+			assertTrackerUntouched(harness.tracker);
+		} finally {
+			disposeSSEHarness(harness);
+		}
+	});
+
+	test("SSE running tool part leaves tracker untouched", async () => {
+		const harness = createSSEHarness();
+
+		try {
+			await startSSEHarness(harness);
+			harness.streams[0].push({
+				type: "message.part.updated",
+				sessionID: "s1",
+				time: 1234,
+				part: {
+					type: "tool",
+					tool: "edit",
+					state: {
+						status: "running",
+						metadata: {
+							filepath: "/workspace/a/src/running.ts",
+							diff: "@@ -1 +1 @@\n-a\n+b\n",
+						},
+					},
+				},
+			});
+
+			await timeout(20);
+			assertTrackerUntouched(harness.tracker);
+		} finally {
+			disposeSSEHarness(harness);
+		}
+	});
+
+	test("SSE completed bash tool leaves tracker untouched", async () => {
+		const harness = createSSEHarness();
+
+		try {
+			await startSSEHarness(harness);
+			harness.streams[0].push(
+				completedToolEvent("bash", {
+					filepath: "/workspace/a/src/bash.ts",
+					diff: "@@ -1 +1 @@\n-a\n+b\n",
+				}),
+			);
+
+			await timeout(20);
+			assertTrackerUntouched(harness.tracker);
+		} finally {
+			disposeSSEHarness(harness);
+		}
+	});
+
+	test("SSE completed edit tool without metadata diff leaves tracker untouched", async () => {
+		const harness = createSSEHarness();
+
+		try {
+			await startSSEHarness(harness);
+			harness.streams[0].push(
+				completedToolEvent("edit", {
+					filepath: "/workspace/a/src/no-diff.ts",
+				}),
+			);
+
+			await timeout(20);
+			assertTrackerUntouched(harness.tracker);
+		} finally {
+			disposeSSEHarness(harness);
 		}
 	});
 
@@ -593,6 +1002,31 @@ suite("OpencodeSessionsService", () => {
 				service.state.sessions.map((item) => item.id),
 				["b1", "b2", "b3", "b4", "b5"],
 			);
+		} finally {
+			service.dispose();
+			workspace.dispose();
+		}
+	});
+
+	test("workspace switch clears tracker", () => {
+		const workspace = createWorkspaceHarness("/workspace/a");
+		const tracker = createAgentEditTracker();
+		const service = createService({
+			workspace,
+			requestService: createRequestService(
+				{ "http://127.0.0.1:4101": { sessions: [] } },
+				[],
+			),
+			agentEditTracker: tracker.service,
+		});
+
+		try {
+			workspace.setWorkspace("/workspace/b");
+
+			assert.strictEqual(tracker.clearCalls, 1);
+			assert.strictEqual(tracker.markModifiedCalls.length, 0);
+			assert.strictEqual(tracker.markRemovedCalls.length, 0);
+			assert.strictEqual(tracker.attachHunksCalls.length, 0);
 		} finally {
 			service.dispose();
 			workspace.dispose();

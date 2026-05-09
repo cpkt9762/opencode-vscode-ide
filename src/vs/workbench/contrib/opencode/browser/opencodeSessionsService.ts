@@ -6,11 +6,14 @@ import { CancellationToken } from "../../../../base/common/cancellation.js";
 import { Emitter, type Event } from "../../../../base/common/event.js";
 import { Disposable } from "../../../../base/common/lifecycle.js";
 import { FileAccess } from "../../../../base/common/network.js";
+import { URI } from "../../../../base/common/uri.js";
 import type { IHeaders, IRequestContext } from "../../../../base/parts/request/common/request.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
 import { asJson, IRequestService, isSuccess } from "../../../../platform/request/common/request.js";
 import { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
+import { IAgentEditTracker } from "../common/agentEditTracker.js";
+import { parseUnifiedDiffHunks } from "../common/hunkParser.js";
 import {
 	createSSEStreamReader,
 	parseSSELine,
@@ -272,6 +275,8 @@ export class OpencodeSessionsService
 	private sseAbort: AbortController | undefined;
 	private sseConnected = false;
 	private readonly requestService: IRequestService;
+	private readonly eventStreamFactory: OpencodeSessionsEventStreamFactory;
+	private readonly agentEditTracker: IAgentEditTracker;
 
 	get connectionConnected(): boolean {
 		return this.sseConnected;
@@ -283,15 +288,21 @@ export class OpencodeSessionsService
 		private readonly contextService: IWorkspaceContextService,
 		configurationService: IConfigurationService,
 		requestService: IRequestService | undefined = undefined,
-		private readonly eventStreamFactory: OpencodeSessionsEventStreamFactory = defaultEventStreamFactory,
+		eventStreamFactory: OpencodeSessionsEventStreamFactory | undefined = undefined,
+		agentEditTracker: IAgentEditTracker | undefined = undefined,
 	) {
 		super();
 		void configurationService;
 		if (!requestService) {
 			throw new Error("OpenCode sessions service requires IRequestService");
 		}
+		if (!agentEditTracker) {
+			throw new Error("OpenCode sessions service requires IAgentEditTracker");
+		}
 
 		this.requestService = requestService;
+		this.eventStreamFactory = eventStreamFactory ?? defaultEventStreamFactory;
+		this.agentEditTracker = agentEditTracker;
 		this._register(
 			this.contextService.onDidChangeWorkspaceFolders(() =>
 				this.onWorkspaceSwitch(),
@@ -518,6 +529,65 @@ export class OpencodeSessionsService
 	}
 
 	private handleSSEEvent(event: IOpencodeSessionEvent): void {
+		if (event.type === "file.edited") {
+			this.agentEditTracker.markModified(URI.file(event.file));
+			return;
+		}
+
+		if (event.type === "file.watcher.updated" && event.event === "unlink") {
+			this.agentEditTracker.markRemoved(URI.file(event.file));
+			return;
+		}
+
+		if (event.type === "message.part.updated") {
+			const part = event.part;
+			if (part.type !== "tool" || part.state?.status !== "completed" || !part.tool) {
+				return;
+			}
+
+			const meta = part.state.metadata;
+			if (!meta) {
+				return;
+			}
+
+			// edit / write: { filepath, diff }
+			if (part.tool === "edit" || part.tool === "write") {
+				if (typeof meta.filepath !== "string" || typeof meta.diff !== "string") {
+					return;
+				}
+
+				const hunks = parseUnifiedDiffHunks(meta.diff);
+				this.agentEditTracker.attachHunks(URI.file(meta.filepath), hunks, event.time);
+				return;
+			}
+
+			// multiedit: { results: [{filepath, diff}, ...] }
+			if (part.tool === "multiedit") {
+				if (!Array.isArray(meta.results)) {
+					return;
+				}
+
+				for (const entry of meta.results) {
+					if (typeof entry?.filepath !== "string" || typeof entry?.diff !== "string") {
+						continue;
+					}
+
+					const hunks = parseUnifiedDiffHunks(entry.diff);
+					this.agentEditTracker.attachHunks(URI.file(entry.filepath), hunks, event.time);
+				}
+				return;
+			}
+
+			// apply_patch: aggregated diff cannot be cleanly per-file split — deferred to v2.
+			// file.edited still marks files as modified; navigator gracefully degrades to no-reveal.
+			if (part.tool === "apply_patch") {
+				return;
+			}
+
+			// Other tools (bash, glob, read, todo, ...): ignore.
+			return;
+		}
+
 		if (event.type === "created" || event.type === "updated") {
 			const session = eventSession(event);
 			if (!session) {
@@ -691,6 +761,7 @@ export class OpencodeSessionsService
 		this.abortSSE();
 		this.resetApiState();
 		this.resetState();
+		this.agentEditTracker.clear();
 		this.onDidChangeSessionsEmitter.fire();
 
 		if (!this.started) {
@@ -811,3 +882,4 @@ ISpaProxyService(OpencodeSessionsService, "", 1);
 IWorkspaceContextService(OpencodeSessionsService, "", 2);
 IConfigurationService(OpencodeSessionsService, "", 3);
 IRequestService(OpencodeSessionsService, "", 4);
+IAgentEditTracker(OpencodeSessionsService, undefined, 6);
