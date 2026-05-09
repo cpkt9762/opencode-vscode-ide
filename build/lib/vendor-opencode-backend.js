@@ -15,6 +15,12 @@ const fail = (message) => {
   process.exit(1)
 }
 
+const rewriteSha256 = args.includes("--rewrite-sha256")
+
+if (rewriteSha256 && process.env.OPENCODE_BACKEND_ALLOW_REWRITE !== "1") {
+  fail("Refusing to rewrite manifest sha256 without OPENCODE_BACKEND_ALLOW_REWRITE=1. This guard prevents accidental sha drift in CI.")
+}
+
 const scriptDir = path.dirname(path.resolve(process.argv[1]))
 const manifestPath = path.resolve(scriptDir, "..", "opencode-backend.json")
 const manifestDir = path.dirname(manifestPath)
@@ -51,7 +57,6 @@ try {
 }
 
 const computedSha256 = crypto.createHash("sha256").update(fs.readFileSync(sourcePath)).digest("hex")
-const rewriteSha256 = args.includes("--rewrite-sha256")
 const sha256 = (() => {
   if (entry.sha256 === computedSha256) return computedSha256
   if (!rewriteSha256) {

@@ -36,7 +36,7 @@ help:
 	@echo "    make run           launch dev build via scripts/code.sh"
 	@echo ""
 	@echo "  Install:"
-	@echo "    make build         build .app via gulp vscode-darwin-arm64"
+	@echo "    make build         compile + vendor backend + build .app via gulp vscode-darwin-arm64"
 	@echo "    make install       compile + build + cp .app to /Applications (with backup)"
 	@echo "    make uninstall     restore the most recent /Applications/<app>.bak.*"
 	@echo ""
@@ -108,14 +108,14 @@ clean:
 	@echo ">> Removed out/ and node_modules/*cache"
 
 .PHONY: build
-build:
+build: compile vendor-opencode-backend
 	@echo ">> gulp vscode-darwin-arm64..."
 	bash -lc '$(NVM_SETUP) && NODE_OPTIONS=--max-old-space-size=8192 npx gulp vscode-darwin-arm64'
 	@test -d "$(BUILD_OUT)" || { echo "ERROR: $(BUILD_OUT) not produced"; exit 1; }
 	@echo ">> Built: $(BUILD_OUT)"
 
 .PHONY: install
-install: compile build
+install: build
 	@if [ -d "$(INSTALL_DST)" ]; then \
 		BACKUP="$(INSTALL_DST).bak.$$(date +%Y%m%d-%H%M%S)"; \
 		echo ">> Backing up $(INSTALL_DST) → $$BACKUP"; \

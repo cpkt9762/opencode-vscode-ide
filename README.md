@@ -114,7 +114,7 @@ The `opencode serve` binary is bundled automatically by `make build`. The build 
 
 In a packaged build the IDE always uses the bundled binary. If the bundled binary is missing at startup, the IDE refuses to start and shows a "Please reinstall OpenCode IDE" error.
 
-For local development you can override the binary with the `opencode.binaryPath` setting — this is ignored in packaged builds.
+For local development or debugging you can override the binary with the `opencode.binaryPath` setting; the override takes precedence in both packaged and dev builds. Use this only when you have a specific reason to — the bundled binary is the supported path.
 
 ---
 
