@@ -24,7 +24,10 @@ export type IOpencodeSessionEvent =
 	| { readonly type: 'updated'; readonly session: IOpencodeSession }
 	| { readonly type: 'deleted'; readonly sessionID: string }
 	| { readonly type: 'idle'; readonly sessionID: string }
-	| { readonly type: 'status'; readonly sessionID: string; readonly status: IOpencodeSessionStatus };
+	| { readonly type: 'status'; readonly sessionID: string; readonly status: IOpencodeSessionStatus }
+	| { readonly type: "file.edited"; readonly file: string }
+	| { readonly type: "file.watcher.updated"; readonly file: string; readonly event: "add" | "change" | "unlink" }
+	| { readonly type: "message.part.updated"; readonly sessionID: string; readonly part: IOpencodePart; readonly time: number };
 
 export type SessionsGroupId = 'today' | 'yesterday' | 'thisWeek' | 'older';
 
@@ -84,4 +87,31 @@ export interface IOpencodeSessionsService {
 	renameSession(id: string, title: string): Promise<void>;
 	shareSession(id: string): Promise<string>;
 	forkSession(id: string): Promise<string>;
+}
+
+export interface IOpencodePart {
+	readonly type: string;
+	readonly tool?: string;
+	readonly state?: {
+		readonly status: string;
+		/**
+		 * Tool metadata. Shape varies per tool (verified via grep against backend source):
+		 *   - edit / write: `{ filepath: string; diff: string }` (single file, unified-diff)
+		 *   - multiedit: `{ results: Array<{ filepath?: string; diff?: string }> }` (one entry per sub-edit)
+		 *   - apply_patch (normal): `{ filepath: string; diff: string; files: string[] }` (filepath is COMMA-JOINED relative paths, diff is aggregated multi-file — not directly usable for per-file hunks in v1.4)
+		 *   - apply_patch (bridge mode): `{ diff: string; files: string[]; diagnostics: object }` (no filepath at all)
+		 * Plan does runtime narrowing in Task 8 dispatch.
+		 */
+		readonly metadata?: {
+			readonly filepath?: string;
+			readonly diff?: string;
+			readonly results?: ReadonlyArray<{ readonly filepath?: string; readonly diff?: string }>;
+			readonly files?: readonly string[];
+		};
+	};
+}
+
+export interface HunkRange {
+	readonly modifiedStartLine: number;
+	readonly modifiedLineCount: number;
 }

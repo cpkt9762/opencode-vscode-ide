@@ -22,6 +22,14 @@ export const listFocusForeground = registerColor('list.focusForeground',
 	null,
 	nls.localize('listFocusForeground', "List/Tree foreground color for the focused item when the list/tree is active. An active list/tree has keyboard focus, an inactive does not."));
 
+export const opencodeAgentModifiedForeground = registerColor('list.opencodeAgentModifiedForeground',
+	{ dark: '#4EC9B0', light: '#0E639C', hcDark: '#4EC9B0', hcLight: '#0E639C' },
+	nls.localize('opencodeAgentModifiedForeground', "Foreground color for files in the Explorer that have been modified by the OpenCode agent and not yet viewed."));
+
+export const opencodeAgentViewedForeground = registerColor('list.opencodeAgentViewedForeground',
+	{ dark: '#357A6F', light: '#4A6F88', hcDark: '#357A6F', hcLight: '#4A6F88' },
+	nls.localize('opencodeAgentViewedForeground', "Foreground color for files in the Explorer that were modified by the OpenCode agent and the user has subsequently opened (viewed)."));
+
 export const listFocusOutline = registerColor('list.focusOutline',
 	{ dark: focusBorder, light: focusBorder, hcDark: activeContrastBorder, hcLight: activeContrastBorder },
 	nls.localize('listFocusOutline', "List/Tree outline color for the focused item when the list/tree is active. An active list/tree has keyboard focus, an inactive does not."));
