@@ -14,6 +14,20 @@ BUILD_OUT   := $(REPO)/VSCode-darwin-arm64/$(APP_BUNDLE)
 INSTALL_DST := /Applications/$(APP_BUNDLE)
 NVM_SETUP := source $$HOME/.nvm/nvm.sh && nvm use 22
 
+# Dev rewrite knob — when set to 1, vendor-opencode-backend will auto-rewrite
+# manifest sha256 to match the freshly-built binary. Required because Bun
+# compile + SPA bundling is non-deterministic across local rebuilds. CI MUST
+# leave this UNSET so manifest sha drift is caught.
+OPENCODE_BACKEND_DEV_REWRITE ?=
+
+ifeq ($(OPENCODE_BACKEND_DEV_REWRITE),1)
+VENDOR_VALIDATOR_ENV  := OPENCODE_BACKEND_ALLOW_REWRITE=1
+VENDOR_VALIDATOR_FLAG := --rewrite-sha256
+else
+VENDOR_VALIDATOR_ENV  :=
+VENDOR_VALIDATOR_FLAG :=
+endif
+
 .PHONY: help
 help:
 	@echo "opencode-ide-fork - Makefile targets:"
@@ -30,6 +44,7 @@ help:
 	@echo ""
 	@echo "  Bundle backend:"
 	@echo "    make vendor-opencode-backend             rebuild + validate + copy opencode binary into .vendored/"
+	@echo "    make vendor-opencode-backend-dev         rebuild + validate with auto sha rewrite"
 	@echo "    make vendor-opencode-backend-validate-only  validate + copy without rebuild"
 	@echo ""
 	@echo "  Run:"
@@ -38,6 +53,8 @@ help:
 	@echo "  Install:"
 	@echo "    make build         compile + vendor backend + build .app via gulp vscode-darwin-arm64"
 	@echo "    make install       compile + build + cp .app to /Applications (with backup)"
+	@echo "    make install-dev   compile + vendor (auto sha rewrite) + build + install"
+	@echo "                       (use this on dev workstations; CI must use 'make install')"
 	@echo "    make uninstall     restore the most recent /Applications/<app>.bak.*"
 	@echo ""
 	@echo "  Test:"
@@ -75,7 +92,11 @@ vendor-spa:
 .PHONY: vendor-opencode-backend
 vendor-opencode-backend:
 	cd $(REPO) && bun packages/opencode/script/build.ts --single --skip-install
-	node $(ROOT)/build/lib/vendor-opencode-backend.js
+	$(VENDOR_VALIDATOR_ENV) node $(ROOT)/build/lib/vendor-opencode-backend.js $(VENDOR_VALIDATOR_FLAG)
+
+.PHONY: vendor-opencode-backend-dev
+vendor-opencode-backend-dev:
+	$(MAKE) vendor-opencode-backend OPENCODE_BACKEND_DEV_REWRITE=1
 
 .PHONY: vendor-opencode-backend-validate-only
 vendor-opencode-backend-validate-only:
@@ -125,6 +146,10 @@ install: build
 	cp -R "$(BUILD_OUT)" "$(INSTALL_DST)"
 	@stat -f ">> Installed at: %Sm" "$(INSTALL_DST)/Contents/Info.plist"
 	@/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$(INSTALL_DST)/Contents/Info.plist" | xargs -I{} echo ">> Version: {}"
+
+.PHONY: install-dev
+install-dev:
+	$(MAKE) install OPENCODE_BACKEND_DEV_REWRITE=1
 
 .PHONY: uninstall
 uninstall:
