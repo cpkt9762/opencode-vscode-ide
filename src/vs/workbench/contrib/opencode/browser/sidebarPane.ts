@@ -1154,7 +1154,34 @@ export class OpencodeSidebarPane extends ViewPane {
 			return url;
 		}
 
+		// Validate the persisted session still exists on the running backend. If
+		// the backend's DB root changed or the session was deleted, the stored ID
+		// becomes invalid. Auto-clear the stale key and fall back to the base URL
+		// instead of deep-linking the SPA to a NotFoundError overlay.
+		if (!(await this.sessionExistsOnBackend(url, sessionId))) {
+			this.storageService.remove(lastSessionStorageKey, StorageScope.WORKSPACE);
+			return url;
+		}
+
 		return `${url}/session/${encodeURIComponent(sessionId)}`;
+	}
+
+	private async sessionExistsOnBackend(baseUrl: string, sessionId: string): Promise<boolean> {
+		try {
+			const response = await fetch(`${baseUrl}/session/${encodeURIComponent(sessionId)}`);
+			if (response.status !== 404) {
+				return true;
+			}
+
+			const body = await response.json().catch(() => undefined) as { name?: string } | undefined;
+			// Treat as missing only when the backend explicitly says NotFoundError.
+			// Other 404s can be proxy/transient issues, so keep the optimistic
+			// deep-link and avoid wiping user state.
+			return body?.name !== "NotFoundError";
+		} catch {
+			// Network/proxy hiccups: keep optimistic deep-link and do not clear.
+			return true;
+		}
 	}
 
 	private executeCommand(command: string): Promise<void> {
