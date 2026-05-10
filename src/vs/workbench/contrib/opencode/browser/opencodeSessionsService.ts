@@ -288,8 +288,14 @@ export class OpencodeSessionsService
 		private readonly contextService: IWorkspaceContextService,
 		configurationService: IConfigurationService,
 		requestService: IRequestService | undefined = undefined,
-		eventStreamFactory: OpencodeSessionsEventStreamFactory | undefined = undefined,
+		// IMPORTANT: All DI-injected services must be CONTIGUOUS — the workbench
+		// `_createInstance` helper sorts decorations by index then spreads them
+		// positionally via `args.concat(serviceArgs)`. A non-DI optional param
+		// inserted in the middle (e.g. `eventStreamFactory`) shifts every later
+		// DI service into the wrong constructor slot. Keep `eventStreamFactory`
+		// at the END as a tests-only positional override.
 		agentEditTracker: IAgentEditTracker | undefined = undefined,
+		eventStreamFactory: OpencodeSessionsEventStreamFactory | undefined = undefined,
 	) {
 		super();
 		void configurationService;
@@ -882,4 +888,4 @@ ISpaProxyService(OpencodeSessionsService, "", 1);
 IWorkspaceContextService(OpencodeSessionsService, "", 2);
 IConfigurationService(OpencodeSessionsService, "", 3);
 IRequestService(OpencodeSessionsService, "", 4);
-IAgentEditTracker(OpencodeSessionsService, undefined, 6);
+IAgentEditTracker(OpencodeSessionsService, undefined, 5);

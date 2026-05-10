@@ -321,8 +321,8 @@ function createService(input: {
 		input.workspace.service,
 		createConfigurationService(),
 		input.requestService,
-		input.eventStreamFactory ?? createIdleEventStreamFactory(),
 		input.agentEditTracker ?? createAgentEditTracker().service,
+		input.eventStreamFactory ?? createIdleEventStreamFactory(),
 	);
 }
 
@@ -499,8 +499,8 @@ suite("OpencodeSessionsService", () => {
 				{ "http://127.0.0.1:4101": { sessions: [] } },
 				calls,
 			),
-			undefined,
 			createAgentEditTracker().service,
+			undefined,
 		);
 
 		try {
